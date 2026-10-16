@@ -24,6 +24,10 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        source: "/ffmpeg/v0.12.15-core0.12.10/core/ffmpeg-core.wasm",
+        headers: [{ key: "Content-Type", value: "application/wasm" }],
+      },
+      {
         source: "/ffmpeg/v0.12.15-core0.12.10/:path*",
         headers: [
           {

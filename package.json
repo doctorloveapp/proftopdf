@@ -17,6 +17,9 @@
     "verify:infra": "node scripts/verify-infrastructure.mjs",
     "verify:quotas": "node --import tsx scripts/verify-atomic-quota.ts",
     "verify:auth": "node --conditions=react-server --import tsx scripts/verify-auth.ts",
+    "verify:audio-assets": "node scripts/verify-audio-assets.mjs",
+    "verify:audio-core": "node --import tsx scripts/verify-audio-core.mts",
+    "verify:mp3": "node --import tsx scripts/verify-mp3.mts",
     "assets:generate": "node scripts/generate-brand-assets.mjs",
     "test": "node --import tsx --test tests/unit/*.test.ts"
   },

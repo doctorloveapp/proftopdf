@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prepareAudio } from "../../src/lib/pipeline/prepare-audio";
 import { wavHeader } from "../../src/lib/audio/wav";
+import { exportAudioLog } from "../../src/lib/audio/diagnostics";
 import {
   getChunk,
   listJobs,
@@ -45,6 +46,58 @@ function initial(file: File): LocalJob {
     },
   };
 }
+
+test("Real preparation path handles MP3 without Worker/window/FFmpeg and retains downloadable diagnostics on failure", async () => {
+  assert.equal(typeof Worker, "undefined");
+  assert.equal(typeof window, "undefined");
+  const frame = new Uint8Array(417);
+  frame.set([255, 251, 144, 192]);
+  const file = new File(
+    Array.from({ length: 9000 }, () => frame),
+    "lecture-private-name.mp3",
+    { type: "audio/mpeg" },
+  );
+  const local = initial(file);
+  await saveJob(local);
+  const controller = new AbortController();
+  const paused = await prepareAudio(
+    file,
+    local,
+    controller.signal,
+    (entry, progress) => {
+      if (progress.stage === "preparing" && entry.preparedChunkIds.length === 1)
+        controller.abort("user-pause");
+    },
+  );
+  assert.equal(paused.job.stage, "paused");
+  const ready = await prepareAudio(
+    file,
+    paused,
+    new AbortController().signal,
+    () => {},
+  );
+  assert.equal(ready.job.stage, "ready");
+  assert(ready.manifest.chunks.length > 1);
+  const log = exportAudioLog(local.job.id);
+  assert(log.includes("mp3-js"));
+  assert(log.includes("chunk.restored"));
+  assert(!log.includes("lecture-private-name"));
+  assert(!log.includes("worker.load"));
+  await removeJob(local.job.id);
+  const broken = new File(["not an mp3"], "broken.mp3");
+  const failed = initial(broken);
+  await saveJob(failed);
+  await assert.rejects(
+    () => prepareAudio(broken, failed, new AbortController().signal, () => {}),
+    /MP3_FRAME_INVALID/,
+  );
+  assert(exportAudioLog(failed.job.id).includes("preparation.failed"));
+  const saved = (await listJobs()).find(
+    (entry) => entry.job.id === failed.job.id,
+  )!;
+  assert.equal(saved.job.error?.code, "MP3_FRAME_INVALID");
+  await removeJob(failed.job.id);
+});
 test("Real WAV preparation resumes from a committed chunk after an interruption", async () => {
   const format = {
     channels: 1,

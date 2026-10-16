@@ -6,6 +6,7 @@ import { api, ClientApiError } from "@/lib/client/api";
 import { AUDIO_ACCEPT, validateFile } from "@/lib/pipeline/prepare-audio";
 import { removeJob, saveJob, type LocalJob } from "@/lib/storage/jobs";
 import { importCheckpoint, exportCheckpoint } from "@/lib/storage/checkpoint";
+import { exportAudioLog, removeAudioLog } from "@/lib/audio/diagnostics";
 import type { QuotaState, ProcessingStage } from "@/lib/shared/types";
 
 const labels: Partial<Record<ProcessingStage, string>> = {
@@ -105,6 +106,7 @@ export default function StudioWorkspace({
     setStorageBusy(true);
     try {
       await removeJob(selected.job.id);
+      removeAudioLog(selected.job.id);
       newLesson();
       await state.refresh();
       setNotice("Lezione e segmenti eliminati da questo dispositivo.");
@@ -150,6 +152,30 @@ export default function StudioWorkspace({
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
+  function downloadDiagnostics() {
+    if (!selected) return;
+    try {
+      const url = URL.createObjectURL(
+        new Blob([exportAudioLog(selected.job.id)], {
+          type: "application/json",
+        }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `ProfToPdf-log-${selected.job.id.slice(0, 8)}.json`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      setNotice(
+        "Log diagnostico scaricato. Contiene tempi, fasi ed errori tecnici; puoi condividerlo per l’analisi.",
+      );
+    } catch (error) {
+      state.setError(
+        error instanceof Error ? error.message : "Log non disponibile.",
+      );
+    }
   }
   const audioQuota = quotas?.transcription.windows.find(
     (window) =>
@@ -441,6 +467,13 @@ export default function StudioWorkspace({
           {notice && (
             <div className="feedback" role="status">
               {notice}
+            </div>
+          )}
+          {selected && (
+            <div className="job-actions">
+              <button className="text-button" onClick={downloadDiagnostics}>
+                Scarica log diagnostico
+              </button>
             </div>
           )}
           {selected && !state.busy && (

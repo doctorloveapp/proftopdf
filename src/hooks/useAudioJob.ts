@@ -11,6 +11,8 @@ import {
   saveJob,
   type LocalJob,
 } from "@/lib/storage/jobs";
+import { createAudioLog } from "@/lib/audio/diagnostics";
+import { audioFailure } from "@/lib/audio/errors";
 
 export function useAudioJob() {
   const [jobs, setJobs] = useState<LocalJob[]>([]);
@@ -43,14 +45,14 @@ export function useAudioJob() {
       ),
     );
     const hide = () => {
-      if (document.hidden) controller.current?.abort();
+      if (document.hidden) controller.current?.abort("page-hidden");
     };
-    const pageHide = () => controller.current?.abort();
+    const pageHide = () => controller.current?.abort("page-hide");
     document.addEventListener("visibilitychange", hide);
     window.addEventListener("pagehide", pageHide);
     return () => {
       mounted.current = false;
-      controller.current?.abort();
+      controller.current?.abort("component-unmounted");
       document.removeEventListener("visibilitychange", hide);
       window.removeEventListener("pagehide", pageHide);
     };
@@ -100,6 +102,8 @@ export function useAudioJob() {
         },
       };
       setSelectedId(local.job.id);
+      const log = createAudioLog(local.job.id);
+      log("job.open", { resume: Boolean(existing) });
       try {
         if (!existing) await saveJob(local);
         upsert(local);
@@ -111,9 +115,12 @@ export function useAudioJob() {
             upsert(entry);
             if (mounted.current) setProgress(value);
           },
+          log,
         );
         upsert(result);
       } catch (error) {
+        const failure = audioFailure(error, "job");
+        log("job.failed", { code: failure.code, ...failure.details }, "error");
         if (mounted.current)
           setError(
             error instanceof Error ? error.message : "Preparazione interrotta.",
@@ -139,7 +146,7 @@ export function useAudioJob() {
     error,
     setError,
     start,
-    pause: () => controller.current?.abort(),
+    pause: () => controller.current?.abort("user-pause"),
     cancel: () => controller.current?.abort("cancelled"),
     refresh,
   };
