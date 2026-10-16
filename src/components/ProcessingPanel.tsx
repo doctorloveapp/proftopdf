@@ -15,6 +15,8 @@ import {
 } from "@/lib/transcription/merge";
 import { createAudioLog } from "@/lib/audio/diagnostics";
 import type { ProcessingOptions } from "@/lib/pipeline/process-lecture";
+import { documentFileStem } from "@/lib/pdf/naming";
+import { scrollToControl } from "@/lib/client/scroll";
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob),
@@ -40,13 +42,12 @@ export default function ProcessingPanel({
   onSaved: () => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const [consent, setConsent] = useState(false),
-    [editing, setEditing] = useState(false),
+  const [editing, setEditing] = useState(false),
     [saving, setSaving] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false),
-    [pdfUrl, setPdfUrl] = useState(""),
-    [showPdf, setShowPdf] = useState(false);
+    [pdfUrl, setPdfUrl] = useState("");
   const pdfController = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
   const data = local.processing,
     lecture = data?.document;
   const markdown = useMemo(
@@ -59,12 +60,16 @@ export default function ProcessingPanel({
     setEditing(false);
     setPdfUrl("");
   }, [markdown]);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       pdfController.current?.abort();
-    },
-    [],
-  );
+    };
+  }, []);
+  useEffect(() => {
+    if (pdfUrl) scrollToControl("pdf-download", true);
+  }, [pdfUrl]);
   useEffect(
     () => () => {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
@@ -86,7 +91,13 @@ export default function ProcessingPanel({
   const failed = local.job.stage === "failed";
   const hasFailure =
     data?.failedChunkIndex !== undefined || Boolean(data?.failedUnitId);
-  const filename = `ProfToPdf-${local.title.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70)}`;
+  const filename = documentFileStem(
+    lecture ?? {
+      title: local.title,
+      subject: local.subject,
+      createdAt: local.job.createdAt,
+    },
+  );
   async function saveDraft() {
     if (!data || !lecture) return;
     if (new TextEncoder().encode(draft).length > 2_000_000) {
@@ -97,7 +108,7 @@ export default function ProcessingPanel({
     let token: string | undefined;
     try {
       token = await acquireLease(local.job.id);
-      await saveMarkdownDraft(local.job.id,draft,lecture.updatedAt,token);
+      await saveMarkdownDraft(local.job.id, draft, lecture.updatedAt, token);
       await onSaved();
       setEditing(false);
     } catch (error) {
@@ -112,6 +123,7 @@ export default function ProcessingPanel({
   async function preparePdf() {
     if (!lecture || pdfBusy) return;
     setPdfBusy(true);
+    scrollToControl("pdf-progress", true);
     const controller = new AbortController();
     pdfController.current = controller;
     const log = createAudioLog(local.job.id);
@@ -119,9 +131,11 @@ export default function ProcessingPanel({
     try {
       const { createPdf } = await import("@/lib/pdf/client");
       const blob = await createPdf(lecture, markdown, controller.signal);
+      if (!mounted.current) return;
       setPdfUrl(URL.createObjectURL(blob));
       log("pdf.complete", { bytes: blob.size });
     } catch (error) {
+      if (!mounted.current) return;
       if (!controller.signal.aborted) {
         const cause =
           error instanceof Error
@@ -147,7 +161,7 @@ export default function ProcessingPanel({
         );
       } else log("pdf.cancelled");
     } finally {
-      setPdfBusy(false);
+      if (mounted.current) setPdfBusy(false);
       pdfController.current = null;
     }
   }
@@ -166,25 +180,14 @@ export default function ProcessingPanel({
             minuti. Le quote gratuite possono richiedere attese: tieni la pagina
             aperta oppure riprendi più tardi.
           </p>
-          <label className="consent">
-            <input
-              type="checkbox"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
-            />
-            <span>
-              Posso condividere questa registrazione con il servizio IA e ho
-              letto come vengono elaborati i dati.
-            </span>
-          </label>
           <button
             className="button full-width"
-            disabled={!consent || !completeAudio || saving || pdfBusy}
+            disabled={!completeAudio || saving || pdfBusy}
             onClick={() => onProcess()}
           >
             {data
               ? "Riprendi / recupera il risultato"
-              : "Trascrivi e crea la dispensa"}
+              : "Trascrivi e crea il Pdf"}
           </button>
           {failed && hasFailure && (
             <div className="recovery-actions">
@@ -195,7 +198,7 @@ export default function ProcessingPanel({
               </p>
               <button
                 className="button button-secondary"
-                disabled={!consent || saving}
+                disabled={saving}
                 onClick={() => onProcess({ newAttempt: true })}
               >
                 Autorizza un nuovo tentativo
@@ -204,7 +207,7 @@ export default function ProcessingPanel({
                 <>
                   <button
                     className="text-button"
-                    disabled={!consent || saving}
+                    disabled={saving}
                     onClick={() => onProcess({ accurate: true })}
                   >
                     Riprova questo segmento con Whisper V3
@@ -219,7 +222,7 @@ export default function ProcessingPanel({
                   ].includes(local.job.error?.code ?? "") && (
                     <button
                       className="text-button danger"
-                      disabled={!consent || saving}
+                      disabled={saving}
                       onClick={() => onProcess({ skipFailed: true })}
                     >
                       Segna il segmento come mancante e continua
@@ -300,13 +303,15 @@ export default function ProcessingPanel({
             >
               Scarica Markdown
             </button>
-            <button
-              className="button button-secondary"
-              disabled={busy || pdfBusy || editing || saving}
-              onClick={() => void preparePdf()}
-            >
-              {pdfBusy ? "Preparazione PDF…" : "Prepara PDF"}
-            </button>
+            {!pdfUrl && (
+              <button
+                className="button button-secondary"
+                disabled={busy || pdfBusy || editing || saving}
+                onClick={() => void preparePdf()}
+              >
+                {pdfBusy ? "Preparazione PDF…" : "Prepara PDF"}
+              </button>
+            )}
             {pdfBusy && (
               <button
                 className="text-button"
@@ -316,6 +321,38 @@ export default function ProcessingPanel({
               </button>
             )}
           </div>
+          {pdfBusy && (
+            <div
+              id="pdf-progress"
+              tabIndex={-1}
+              className="progress-card"
+              role="status"
+            >
+              <strong>Preparazione del PDF sul dispositivo…</strong>
+              <progress aria-label="Creazione PDF" />
+              <p>Appena pronto troverai qui il pulsante Scarica PDF.</p>
+            </div>
+          )}
+          {pdfUrl && (
+            <div className="pdf-actions">
+              <a
+                id="pdf-download"
+                className="button"
+                href={pdfUrl}
+                download={`${filename}.pdf`}
+              >
+                Scarica PDF
+              </a>
+              <a
+                className="text-button"
+                href={pdfUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Apri PDF
+              </a>
+            </div>
+          )}
           {editing ? (
             <div className="notes-editor">
               <label>
@@ -350,34 +387,6 @@ export default function ProcessingPanel({
                 {markdown}
               </ReactMarkdown>
             </article>
-          )}
-          {pdfUrl && (
-            <div className="pdf-actions">
-              <a className="button" href={pdfUrl} download={`${filename}.pdf`}>
-                Scarica PDF
-              </a>
-              <a
-                className="text-button"
-                href={pdfUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Apri PDF
-              </a>
-              <button
-                className="text-button"
-                onClick={() => setShowPdf(!showPdf)}
-              >
-                {showPdf ? "Chiudi anteprima PDF" : "Anteprima PDF"}
-              </button>
-            </div>
-          )}
-          {pdfUrl && showPdf && (
-            <iframe
-              className="pdf-preview"
-              src={pdfUrl}
-              title="Anteprima della dispensa PDF"
-            />
           )}
           {Object.entries(data!.transcripts)
             .filter(([, r]) => r.status === "missing")

@@ -16,6 +16,7 @@ import {
   utf8Bytes,
 } from "@/lib/shared/processing";
 import { buildNotesRequest, validateNotesOutput } from "@/lib/notes/request";
+import { LANGUAGE_POLICY_REVISION } from "@/lib/shared/lecture";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -45,7 +46,11 @@ export async function POST(request: NextRequest) {
         "TOKEN_BUDGET",
         "Questa unità supera il budget gratuito. Riduci la dimensione delle unità di testo.",
       );
-    const unit = `${PROCESSING_REVISION}:${input.mode}:${input.unitId}:${input.attempt}:${config.GROQ_NOTES_MODEL}`;
+    const revision =
+      input.languagePolicy === "original"
+        ? `${PROCESSING_REVISION}:${LANGUAGE_POLICY_REVISION}`
+        : PROCESSING_REVISION;
+    const unit = `${revision}:${input.mode}:${input.unitId}:${input.attempt}:${config.GROQ_NOTES_MODEL}`;
     const fingerprint = operationFingerprint([unit, JSON.stringify(input)]);
     const data = await runAiOperation(
       {

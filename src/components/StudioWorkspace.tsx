@@ -10,6 +10,8 @@ import { exportAudioLog, removeAudioLog } from "@/lib/audio/diagnostics";
 import type { QuotaState, ProcessingStage } from "@/lib/shared/types";
 import QuotaMeter from "./QuotaMeter";
 import ProcessingPanel from "./ProcessingPanel";
+import { SUBJECTS } from "@/lib/shared/lecture";
+import { scrollToControl } from "@/lib/client/scroll";
 
 const labels: Partial<Record<ProcessingStage, string>> = {
   selected: "Da preparare",
@@ -38,8 +40,7 @@ export default function StudioWorkspace({
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState(""),
     [subject, setSubject] = useState("");
-  const [consent, setConsent] = useState(false),
-    [dragging, setDragging] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [quotas, setQuotas] = useState<{
     transcription: QuotaState;
     notes: QuotaState;
@@ -47,8 +48,7 @@ export default function StudioWorkspace({
   const [quotaError, setQuotaError] = useState(""),
     [notice, setNotice] = useState("");
   const [loadingQuota, setLoadingQuota] = useState(false),
-    [storageBusy, setStorageBusy] = useState(false),
-    [confirmDelete, setConfirmDelete] = useState(false);
+    [storageBusy, setStorageBusy] = useState(false);
   const picker = useRef<HTMLInputElement>(null),
     checkpointPicker = useRef<HTMLInputElement>(null);
   const selected = state.jobs.find(
@@ -92,8 +92,6 @@ export default function StudioWorkspace({
       setFile(candidate);
       setNotice("");
       state.setError("");
-      if (!selected)
-        setTitle(candidate.name.replace(/\.[^.]+$/, "").slice(0, 200));
     } catch (error) {
       state.setError(
         error instanceof Error ? error.message : "File non valido.",
@@ -101,13 +99,15 @@ export default function StudioWorkspace({
     }
   }
   function newLesson() {
-    if (state.busy) return;
+    if (state.busy || storageBusy) return;
+    resetLesson();
+    scrollToControl("audio-picker-button", true);
+  }
+  function resetLesson() {
     state.setSelectedId(null);
     setFile(null);
     setTitle("");
     setSubject("");
-    setConsent(false);
-    setConfirmDelete(false);
     setNotice("");
     state.setError("");
   }
@@ -115,28 +115,35 @@ export default function StudioWorkspace({
     if (state.busy) return;
     state.setSelectedId(local.job.id);
     setFile(null);
-    setConsent(false);
-    setConfirmDelete(false);
     setNotice("");
     state.setError("");
   }
   async function deleteSelected() {
-    if (!selected || state.busy) return;
+    if (!selected || storageBusy) return;
+    if (
+      !window.confirm(
+        `Eliminare la lezione “${selected.title}” e tutti i suoi dati locali?\n\nL’elaborazione verrà interrotta. Il file audio originale sul telefono non verrà cancellato.`,
+      )
+    )
+      return;
+    const id = selected.job.id;
     setStorageBusy(true);
     try {
-      await removeJob(selected.job.id);
-      removeAudioLog(selected.job.id);
+      await state.stopAndWait();
+      // Revoke any other tab's lease in the same transaction as deletion.
+      await removeJob(id, { interrupt: true });
+      removeAudioLog(id);
+      resetLesson(); // unmount ProcessingPanel, terminating a PDF worker too
+      await state.refresh();
       let remoteRemoved = true;
       try {
-        await api(`/api/jobs/${selected.job.id}`, {
+        await api(`/api/jobs/${id}`, {
           method: "DELETE",
           headers: { "x-csrf-token": csrfToken },
         });
       } catch {
         remoteRemoved = false;
       }
-      newLesson();
-      await state.refresh();
       setNotice(
         remoteRemoved
           ? "Lezione, segmenti locali e cache temporanea della sessione eliminati."
@@ -302,6 +309,10 @@ export default function StudioWorkspace({
             Salvate in questo browser. Uscire dall’account non elimina le
             lezioni dal dispositivo.
           </p>
+          <p className="local-note">
+            Il checkpoint salva solo metadati e confini audio. Per ripartire
+            serve l’originale; non contiene audio, appunti o PDF.
+          </p>
         </aside>
         <section className="upload-panel" aria-labelledby="upload-title">
           <div className="panel-heading">
@@ -375,6 +386,7 @@ export default function StudioWorkspace({
                     : "Scegli un audio dal dispositivo, oppure trascinalo qui."}
                 </p>
                 <button
+                  id="audio-picker-button"
                   className="button"
                   type="button"
                   onClick={() => {
@@ -413,28 +425,31 @@ export default function StudioWorkspace({
                       value={subject}
                       onChange={(event) => setSubject(event.target.value)}
                       maxLength={200}
-                      placeholder="Es. Psicologia generale"
+                      list="lesson-subjects"
+                      placeholder="Scegli o scrivi una materia"
                     />
+                    <datalist id="lesson-subjects">
+                      {SUBJECTS.map((entry) => (
+                        <option key={entry} value={entry} />
+                      ))}
+                    </datalist>
                   </label>
                 </div>
               )}
-              <label className="consent">
-                <input
-                  type="checkbox"
-                  checked={consent}
-                  onChange={(event) => setConsent(event.target.checked)}
-                />
-                <span>
-                  Posso utilizzare questa registrazione. In questa preparazione
-                  l’audio resta sul dispositivo; avviando la trascrizione, i
-                  segmenti verranno inviati a Groq tramite ProfToPdf.
-                </span>
-              </label>
+              <p className="local-note">
+                La preparazione avviene sul dispositivo. Avviando la
+                trascrizione, i segmenti saranno inviati a Groq tramite
+                ProfToPdf. Le lingue parlate vengono conservate senza traduzione
+                automatica.
+              </p>
               <button
                 className="button prepare-button"
-                disabled={!file || !consent || state.busy || storageBusy}
+                disabled={!file || state.busy || storageBusy}
                 onClick={() => {
-                  if (file) void state.start(file, title, subject, selected);
+                  if (file) {
+                    void state.start(file, title, subject, selected);
+                    scrollToControl("lecture-progress", true);
+                  }
                 }}
               >
                 {selected?.job.error?.code === "AUDIO_NORMALIZATION_REQUIRED"
@@ -449,7 +464,12 @@ export default function StudioWorkspace({
           {state.busy ||
           selected?.preparedChunkIds.length ||
           selected?.job.stage === "ready" ? (
-            <div className="progress-card" aria-live="polite">
+            <div
+              id="lecture-progress"
+              tabIndex={-1}
+              className="progress-card"
+              aria-live="polite"
+            >
               <div className="progress-heading">
                 <strong>
                   {state.busy
@@ -499,7 +519,7 @@ export default function StudioWorkspace({
                     Metti in pausa
                   </button>
                   <button className="text-button danger" onClick={state.cancel}>
-                    Annulla preparazione
+                    Annulla elaborazione
                   </button>
                 </div>
               )}
@@ -525,51 +545,35 @@ export default function StudioWorkspace({
           {selected && (
             <ProcessingPanel
               local={selected}
-              busy={state.busy}
+              busy={state.busy || storageBusy}
               csrfToken={csrfToken}
               key={selected.job.id}
-              onProcess={(options) =>
-                void state.process(selected, csrfToken, options)
-              }
+              onProcess={(options) => {
+                void state.process(selected, csrfToken, options);
+                scrollToControl("lecture-progress", true);
+              }}
               onSaved={state.refresh}
               onError={(message) => state.setError(message)}
             />
           )}
-          {selected && !state.busy && (
+          {selected && (
             <div className="job-actions">
               <button
                 className="text-button"
-                disabled={!selected.manifest.source.sha256 || storageBusy}
+                disabled={
+                  state.busy || !selected.manifest.source.sha256 || storageBusy
+                }
                 onClick={downloadCheckpoint}
               >
                 Esporta checkpoint
               </button>
-              {confirmDelete ? (
-                <div className="delete-confirm">
-                  <span>Eliminare audio e dati locali?</span>
-                  <button
-                    className="text-button danger"
-                    disabled={storageBusy}
-                    onClick={() => void deleteSelected()}
-                  >
-                    Sì, elimina
-                  </button>
-                  <button
-                    className="text-button"
-                    onClick={() => setConfirmDelete(false)}
-                  >
-                    Annulla
-                  </button>
-                </div>
-              ) : (
-                <button
-                  className="text-button danger"
-                  disabled={storageBusy}
-                  onClick={() => setConfirmDelete(true)}
-                >
-                  Elimina dal dispositivo
-                </button>
-              )}
+              <button
+                className="text-button danger"
+                disabled={storageBusy}
+                onClick={() => void deleteSelected()}
+              >
+                {storageBusy ? "Eliminazione…" : "Elimina lezione"}
+              </button>
             </div>
           )}
         </section>

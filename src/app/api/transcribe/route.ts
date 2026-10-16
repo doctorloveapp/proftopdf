@@ -16,6 +16,11 @@ import { enforceRateLimit, operationFingerprint } from "@/lib/server/quota";
 import { ownerKey, runAiOperation } from "@/lib/server/operation";
 import { normalizeTranscription } from "@/lib/transcription/normalize";
 import { PROCESSING_REVISION, MAX_ATTEMPTS } from "@/lib/shared/processing";
+import {
+  LANGUAGE_POLICY_REVISION,
+  TRANSCRIPTION_PROFILES,
+  transcriptionContext,
+} from "@/lib/shared/lecture";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +47,8 @@ const headersSchema = z.object({
         .max(MAX_ATTEMPTS - 1),
     ),
   accurate: z.enum(["true", "false"]),
+  profile: z.enum(TRANSCRIPTION_PROFILES).default("general"),
+  languageMode: z.enum(["it", "auto"]).default("it"),
 });
 export async function POST(request: NextRequest) {
   try {
@@ -60,6 +67,8 @@ export async function POST(request: NextRequest) {
       source: request.headers.get("x-source-sha256"),
       attempt: request.headers.get("x-attempt"),
       accurate: request.headers.get("x-accurate"),
+      profile: request.headers.get("x-lecture-profile") ?? undefined,
+      languageMode: request.headers.get("x-language-mode") ?? undefined,
     });
     if (!parsed.success)
       throw new RouteError(
@@ -84,14 +93,21 @@ export async function POST(request: NextRequest) {
         "Tempi del segmento fuori dai limiti.",
       );
     const model = input.accurate ? "whisper-large-v3" : config.GROQ_STT_MODEL;
-    const unit = `${PROCESSING_REVISION}:${input.index}:${model}:${input.attempt}`;
+    // Preserve the old operation identity for paused jobs created before the
+    // multilingual policy. A deployment must not repeat an ambiguous inference.
+    const unit =
+      input.languageMode === "it"
+        ? `${PROCESSING_REVISION}:${input.index}:${model}:${input.attempt}`
+        : `${PROCESSING_REVISION}:${LANGUAGE_POLICY_REVISION}:${input.profile}:${input.index}:${model}:${input.attempt}`;
     const fingerprint = operationFingerprint([
       unit,
       input.source,
       sha,
       String(input.start),
       String(audio.duration),
-      "it",
+      ...(input.languageMode === "it"
+        ? ["it"]
+        : [LANGUAGE_POLICY_REVISION, input.profile]),
     ]);
     const data = await runAiOperation(
       {
@@ -111,7 +127,13 @@ export async function POST(request: NextRequest) {
               type: audio.mime,
             }),
             model,
-            language: "it",
+            // New lessons omit language; only legacy jobs retain their exact
+            // request settings so a recovery can reuse the old cached result.
+            language: input.languageMode === "it" ? "it" : undefined,
+            prompt:
+              input.languageMode === "auto"
+                ? transcriptionContext(input.profile)
+                : undefined,
             response_format: "verbose_json",
             timestamp_granularities: ["segment"],
             temperature: 0,

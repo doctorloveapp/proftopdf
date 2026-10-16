@@ -18,6 +18,7 @@ import {
   type OutlineOutput,
 } from "@/lib/shared/processing";
 import type { AudioChunk, ProcessingStage } from "@/lib/shared/types";
+import { transcriptionProfile } from "@/lib/shared/lecture";
 import type { PreparationProgress } from "./prepare-audio";
 import { mergeTranscripts } from "@/lib/transcription/merge";
 import {
@@ -86,6 +87,8 @@ export function browserAdapter(csrfToken: string): ProcessingAdapter {
           "x-source-sha256": local.job.sourceFingerprint,
           "x-attempt": String(attempt),
           "x-accurate": String(accurate),
+          "x-lecture-profile": transcriptionProfile(local.subject),
+          "x-language-mode": local.manifest.language === "auto" ? "auto" : "it",
         },
       }),
     notes: (input, signal) =>
@@ -110,7 +113,9 @@ export async function processLecture(
   adapter: ProcessingAdapter = browserAdapter(csrfToken),
   quotaChanged: () => void = () => {},
 ) {
-  const stored=await acquireStoredJob(local.job.id),token=stored.token,current=structuredClone(stored.local);
+  const stored = await acquireStoredJob(local.job.id),
+    token = stored.token,
+    current = structuredClone(stored.local);
   current.processing ??= emptyProcessing();
   const data = current.processing,
     log = createAudioLog(current.job.id);
@@ -331,6 +336,9 @@ export async function processLecture(
               attempt,
               title: current.title,
               subject: current.subject,
+              ...(current.manifest.language === "auto"
+                ? { languagePolicy: "original" as const }
+                : {}),
               sources: unit.sources,
             },
             combined,

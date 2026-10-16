@@ -11,6 +11,8 @@ import {
   getChunk,
   reconcileJob,
   listJobs,
+  saveJobWithLease,
+  acquireStoredJob,
 } from "../../src/lib/storage/jobs";
 import { importCheckpoint } from "../../src/lib/storage/checkpoint";
 
@@ -77,6 +79,29 @@ test("Leases serialize tabs and prevent stale writes or deletion of an active jo
   await assert.rejects(() => renewLease(local.job.id, token));
   await releaseLease(local.job.id, next);
   await removeJob(local.job.id);
+});
+
+test("Confirmed deletion revokes an active lease and neither stale checkpoints nor chunks resurrect the lesson", async () => {
+  const local = fixture();
+  await saveJob(local);
+  const token = await acquireLease(local.job.id);
+  await removeJob(local.job.id, { interrupt: true });
+  await assert.rejects(() => saveJobWithLease(local, token));
+  await assert.rejects(() =>
+    savePreparedChunk(
+      local,
+      local.manifest.chunks[0],
+      new Blob([new Uint8Array(1000)]),
+      token,
+    ),
+  );
+  await assert.rejects(() => acquireStoredJob(local.job.id));
+  await releaseLease(local.job.id, token);
+  assert.equal(
+    (await listJobs()).some((entry) => entry.job.id === local.job.id),
+    false,
+  );
+  assert.equal(await getChunk(local.job.id, 0), undefined);
 });
 test("Chunk and job checkpoint commit together; missing chunks are not reported ready", async () => {
   const local = fixture();

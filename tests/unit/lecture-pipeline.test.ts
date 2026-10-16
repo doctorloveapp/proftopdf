@@ -52,6 +52,77 @@ function initial(file: File): LocalJob {
     },
   };
 }
+
+test("Deleting during an in-flight transcription never restores the job or starts notes from a late response", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const format = {
+    channels: 1,
+    sampleRate: 16000,
+    bits: 16,
+    blockAlign: 2,
+    byteRate: 32000,
+  };
+  const file = new File(
+    [wavHeader(format, 32000 * 10), new Uint8Array(32000 * 10)],
+    "pending.wav",
+  );
+  const local = initial(file);
+  await saveJob(local);
+  const ready = await prepareAudio(
+    file,
+    local,
+    new AbortController().signal,
+    () => {},
+  );
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((done) => {
+    entered = done;
+  });
+  const barrier = new Promise<void>((done) => {
+    release = done;
+  });
+  let noteCalls = 0;
+  const adapter: ProcessingAdapter = {
+    transcribe: async (_blob, chunk) => {
+      entered();
+      await barrier;
+      return {
+        sha256: chunk.sha256,
+        model: "mock",
+        durationSeconds: 10,
+        status: "transcribed",
+        segments: [
+          { start: 0, end: 10, text: "Late result", uncertain: false },
+        ],
+      };
+    },
+    notes: async () => {
+      noteCalls++;
+      throw new Error("Unexpected notes after deletion");
+    },
+    wait: async () => {},
+  };
+  const aborter = new AbortController();
+  const pending = processLecture(
+    ready,
+    "synthetic",
+    aborter.signal,
+    () => {},
+    {},
+    adapter,
+  );
+  await started;
+  await removeJob(local.job.id, { interrupt: true });
+  aborter.abort("deleted");
+  release();
+  await pending;
+  assert.equal(
+    (await listJobs()).some((entry) => entry.job.id === local.job.id),
+    false,
+  );
+  assert.equal(noteCalls, 0);
+});
 test("End-to-end local orchestration pauses, resumes, waits for quota, saves notes/outline and does not resend confirmed audio", async (t) => {
   t.mock.method(console, "info", () => {});
   t.mock.method(console, "error", () => {});
@@ -171,7 +242,11 @@ test("End-to-end local orchestration pauses, resumes, waits for quota, saves not
   assert.equal(calls, ready.manifest.chunks.length + 1);
   assert(notes > 1);
   assert.equal(resumed.processing?.document?.glossary.length, 1);
-  assert(resumed.processing?.document?.sections.every((section)=>section.sourceSegmentIds.every((id)=>!id.match(/p\d+$/))));
+  assert(
+    resumed.processing?.document?.sections.every((section) =>
+      section.sourceSegmentIds.every((id) => !id.match(/p\d+$/)),
+    ),
+  );
   const before = calls;
   const restored = (await listJobs()).find((j) => j.job.id === local.job.id)!;
   const replay = await processLecture(

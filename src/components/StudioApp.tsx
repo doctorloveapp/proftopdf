@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ClientApiError, type SessionInfo } from "@/lib/client/api";
 import StudioWorkspace from "./StudioWorkspace";
+import InstallApp from "./InstallApp";
 
 export default function StudioApp() {
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -116,6 +117,7 @@ export default function StudioApp() {
           <span className="header-caption">Il tuo spazio di studio</span>
         )}
       </header>
+      <InstallApp />
       {checking ? (
         <main id="contenuto" className="auth-loading" role="status">
           Apertura del tuo spazio…

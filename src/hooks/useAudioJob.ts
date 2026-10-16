@@ -28,6 +28,11 @@ export function useAudioJob() {
   const controller = useRef<AbortController | null>(null);
   const active = useRef(false),
     mounted = useRef(true);
+  const completion = useRef<{
+    promise: Promise<void>;
+    resolve: () => void;
+  } | null>(null);
+  const refreshVersion = useRef(0);
   const upsert = useCallback((local: LocalJob) => {
     if (mounted.current)
       setJobs((old) => [
@@ -35,16 +40,23 @@ export function useAudioJob() {
         ...old.filter((entry) => entry.job.id !== local.job.id),
       ]);
   }, []);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (chooseFirst = false) => {
+    const version = ++refreshVersion.current;
     const restored = await Promise.all((await listJobs()).map(reconcileJob));
-    if (mounted.current) {
+    if (mounted.current && refreshVersion.current === version) {
       setJobs(restored);
-      setSelectedId((id) => id ?? restored[0]?.job.id ?? null);
+      setSelectedId((id) =>
+        restored.some((entry) => entry.job.id === id)
+          ? id
+          : chooseFirst
+            ? (restored[0]?.job.id ?? null)
+            : null,
+      );
     }
   }, []);
   useEffect(() => {
     mounted.current = true;
-    refresh().catch(() =>
+    refresh(true).catch(() =>
       setError(
         "Archivio locale non disponibile. Verifica lo spazio e le impostazioni del browser.",
       ),
@@ -66,6 +78,13 @@ export function useAudioJob() {
     async (file: File, title: string, subject: string, existing?: LocalJob) => {
       if (active.current) return;
       active.current = true;
+      let resolve!: () => void;
+      completion.current = {
+        promise: new Promise<void>((done) => {
+          resolve = done;
+        }),
+        resolve: () => resolve(),
+      };
       setBusy(true);
       setError("");
       const aborter = new AbortController();
@@ -73,17 +92,13 @@ export function useAudioJob() {
       const id = crypto.randomUUID(),
         now = new Date().toISOString();
       const local: LocalJob = existing ?? {
-        title: (
-          title.trim() ||
-          file.name.replace(/\.[^.]+$/, "") ||
-          "Nuova lezione"
-        ).slice(0, 200),
+        title: (title.trim() || "Nuova lezione").slice(0, 200),
         subject: subject.trim(),
         preparedChunkIds: [],
         manifest: {
           version: 1,
           jobId: id,
-          language: "it",
+          language: "auto",
           source: {
             name: file.name,
             byteLength: file.size,
@@ -141,6 +156,8 @@ export function useAudioJob() {
           setBusy(false);
           setProgress(null);
         }
+        completion.current?.resolve();
+        completion.current = null;
       }
     },
     [refresh, upsert],
@@ -153,6 +170,13 @@ export function useAudioJob() {
     ) => {
       if (active.current) return;
       active.current = true;
+      let resolve!: () => void;
+      completion.current = {
+        promise: new Promise<void>((done) => {
+          resolve = done;
+        }),
+        resolve: () => resolve(),
+      };
       setBusy(true);
       setError("");
       const aborter = new AbortController();
@@ -187,6 +211,8 @@ export function useAudioJob() {
           setProgress(null);
           setQuotaRevision((n) => n + 1);
         }
+        completion.current?.resolve();
+        completion.current = null;
       }
     },
     [upsert, refresh],
@@ -204,6 +230,10 @@ export function useAudioJob() {
     quotaRevision,
     pause: () => controller.current?.abort("user-pause"),
     cancel: () => controller.current?.abort("cancelled"),
+    stopAndWait: async () => {
+      controller.current?.abort("deleted");
+      await completion.current?.promise;
+    },
     refresh,
   };
 }

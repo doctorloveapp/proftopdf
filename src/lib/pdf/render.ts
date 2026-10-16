@@ -3,6 +3,7 @@ import fontkit from "@pdf-lib/fontkit";
 import type { LectureDocument } from "@/lib/shared/types";
 import { documentMarkdown, markdownBlocks } from "@/lib/notes/markdown";
 import { inline } from "@/lib/notes/assemble";
+import { documentHeading } from "./naming";
 const WIDTH = 595.28,
   HEIGHT = 841.89,
   MARGIN = 48,
@@ -166,7 +167,8 @@ export async function renderLecturePdf(
     y -= 8;
   }
   newPage();
-  if (!document.complete) {
+  function partialNotice() {
+    if (document.complete) return;
     const lines = wrap(
       "DISPENSA PARZIALE - Alcuni segmenti non sono stati trascritti. Consultare i passaggi da verificare.",
       9,
@@ -183,7 +185,25 @@ export async function renderLecturePdf(
     draw(lines, 9, MARGIN + 10, amber);
     y -= 12;
   }
-  for (const block of markdownBlocks(markdown ?? documentMarkdown(document))) {
+  const heading = documentHeading(document);
+  const blocks = markdownBlocks(markdown ?? documentMarkdown(document));
+  // Canonical first line even for a saved draft from the previous renderer.
+  if (blocks[0]?.kind === "heading" && blocks[0].text === heading)
+    blocks.shift();
+  if (
+    blocks[1]?.kind === "paragraph" &&
+    blocks[1].text === `Materia: ${document.subject}`
+  )
+    blocks.splice(1, 1);
+  const title =
+    blocks[0]?.kind === "heading" && blocks[0].level === 1
+      ? blocks.shift()!.text
+      : document.title;
+  const identity = wrap(heading, 22, WIDTH - 2 * MARGIN, true);
+  draw(identity, 22, MARGIN, teal);
+  draw(wrap(title, 22, WIDTH - 2 * MARGIN, true), 22, MARGIN, teal);
+  partialNotice();
+  for (const block of blocks) {
     if (
       !document.complete &&
       block.text === "Dispensa parziale: sono presenti segmenti non trascritti."
@@ -225,13 +245,15 @@ export async function renderLecturePdf(
   if (!header)
     throw new Error("PDF_FONT_METRICS: invalid running header width");
   for (const [index, target] of pages.entries()) {
-    target.drawText(header, {
-      x: MARGIN,
-      y: HEIGHT - 32,
-      size: 8,
-      font: regular,
-      color: muted,
-    });
+    // The first visible line on page one is subject + creation date.
+    if (index > 0)
+      target.drawText(header, {
+        x: MARGIN,
+        y: HEIGHT - 32,
+        size: 8,
+        font: regular,
+        color: muted,
+      });
     const label = `${index + 1} / ${pages.length}`;
     target.drawText(label, {
       x: WIDTH - MARGIN - regular.widthOfTextAtSize(label, 8),

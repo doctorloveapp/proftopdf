@@ -25,10 +25,18 @@ for number, page in enumerate(pages, 1):
             violations.append({"page": number, "bounds": [x1, y1, x2, y2]})
 assert not violations, f"Content outside margins: {violations[:5]}"
 assert len(pages) >= 8
-assert sum("ProfToPdf" in word for word in words) == len(pages)
+assert sum("ProfToPdf" in word for word in words) == len(pages) - 1
 assert words.count("Punto") == 120, "Missing or duplicated list entries"
 assert "Glossario" in words and "α," in words and "β," in words
+assert "ἄνθρωπος" in words and "English" in words and "cogito" in words
+assert "17/10/2026" in words, "Missing Italian creation date"
+first_words = pages[0].findall(".//{http://www.w3.org/1999/xhtml}word")
+date_word = next(word for word in first_words if "".join(word.itertext()) == "17/10/2026")
+title_word = next(word for word in first_words if "".join(word.itertext()) == "Energia")
+assert float(date_word.attrib["yMin"]) < float(title_word.attrib["yMin"])
+assert abs(float(date_word.attrib["yMax"]) - float(date_word.attrib["yMin"]) - (float(title_word.attrib["yMax"]) - float(title_word.attrib["yMin"]))) < 0.1
 report = {"pages": len(pages), "words": len(words), "marginViolations": len(violations),
-          "allHeadersPresent": True, "listEntries": 120, "greekAndGlossaryPresent": True}
+          "allHeadersPresent": True, "listEntries": 120, "greekAndGlossaryPresent": True,
+          "originalLanguagesPresent": True, "italianDateAboveTitleSameSize": True}
 (target.parent / "inspection.json").write_text(json.dumps(report, indent=2), encoding="utf8")
 print(json.dumps(report))

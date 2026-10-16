@@ -26,6 +26,7 @@ export const notesRequestSchema = z
       .max(MAX_ATTEMPTS - 1),
     title: z.string().min(1).max(200),
     subject: z.string().max(200),
+    languagePolicy: z.literal("original").optional(),
     sources: z.array(sourceItemSchema).min(1).max(30),
   })
   .strict();

@@ -6,12 +6,11 @@ import { openMp3 } from "@/lib/audio/mp3";
 import { createAudioLog, type AudioLog } from "@/lib/audio/diagnostics";
 import { audioFailure } from "@/lib/audio/errors";
 import {
-  acquireLease,
   acquireStoredJob,
   renewLease,
   releaseLease,
   savePreparedChunk,
-  saveJob,
+  saveJobWithLease,
   getChunk,
   type LocalJob,
 } from "@/lib/storage/jobs";
@@ -61,7 +60,9 @@ export async function prepareAudio(
   let current: LocalJob;
   try {
     validateFile(file);
-    const stored=await acquireStoredJob(local.job.id);token=stored.token;current=structuredClone(stored.local);
+    const stored = await acquireStoredJob(local.job.id);
+    token = stored.token;
+    current = structuredClone(stored.local);
   } catch (error) {
     log("preparation.rejected", { code: "AUDIO_FILE_OR_LEASE" }, "error");
     throw error;
@@ -92,8 +93,7 @@ export async function prepareAudio(
       updatedAt: new Date().toISOString(),
       error: null,
     };
-    await renewLease(current.job.id, token);
-    await saveJob(current);
+    await saveJobWithLease(current, token);
     log("checkpoint.saved", { stage, chunks: current.preparedChunkIds.length });
   }
   try {
@@ -348,8 +348,7 @@ export async function prepareAudio(
     };
     // A stale tab must not overwrite a newer owner's checkpoint.
     try {
-      await renewLease(current.job.id, token);
-      await saveJob(current);
+      await saveJobWithLease(current, token);
     } catch {}
     if (!combined.aborted) throw failure;
     return current;

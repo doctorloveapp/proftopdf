@@ -821,12 +821,39 @@ input:focus-visible {
   gap: 16px;
   margin-top: 20px;
 }
-.pdf-preview {
+.install-app {
+  margin-top: 12px;
+  text-align: right;
+}
+.install-instructions {
+  margin: 10px 0 0 auto;
+  padding: 18px;
+  max-width: 450px;
   border: 1px solid var(--line);
-  width: 100%;
-  height: 600px;
   border-radius: 8px;
-  margin-top: 16px;
+  background: var(--paper);
+  text-align: left;
+  font-size: 0.85rem;
+  line-height: 1.65;
+}
+.install-instructions ol {
+  padding-left: 24px;
+  list-style: decimal;
+}
+.install-instructions p {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+#audio-picker-button,
+#lecture-progress,
+#pdf-progress,
+#pdf-download {
+  scroll-margin-top: 24px;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 .studio-intro {
   display: flex;

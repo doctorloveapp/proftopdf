@@ -1,6 +1,6 @@
 import type { AudioDetails } from "./errors";
 
-export const AUDIO_REVISION = "audio-2026-10-16-v1";
+export const AUDIO_REVISION = "mobile-languages-2026-10-16-v2";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;

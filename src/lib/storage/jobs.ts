@@ -85,24 +85,47 @@ export async function acquireLease(jobId: string) {
   await transaction.done;
   return token;
 }
-export async function acquireStoredJob(jobId:string) {
-  const token=await acquireLease(jobId);
+export async function acquireStoredJob(jobId: string) {
+  const token = await acquireLease(jobId);
   try {
-    const local=await (await db()).get("jobs",jobId);
-    if(!local)throw new Error("Questa lezione non è più presente nell’archivio. Ricarica la pagina.");
-    return {token,local};
-  } catch(error) {await releaseLease(jobId,token).catch(()=>{});throw error;}
-}
-export async function saveMarkdownDraft(jobId:string,draft:string,expectedDocumentDate:string,token:string) {
-  const tx=(await db()).transaction(["jobs","leases"],"readwrite");
-  const lease=await tx.objectStore("leases").get(jobId),local=await tx.objectStore("jobs").get(jobId);
-  if(!lease||lease.token!==token||lease.expiresAt<=Date.now()||!local?.processing?.document||local.processing.document.updatedAt!==expectedDocumentDate) {
-    tx.abort();await tx.done.catch(()=>{});
-    throw new Error("Gli appunti sono cambiati in un’altra scheda. Copia le tue modifiche prima di ricaricare la pagina.");
+    const local = await (await db()).get("jobs", jobId);
+    if (!local)
+      throw new Error(
+        "Questa lezione non è più presente nell’archivio. Ricarica la pagina.",
+      );
+    return { token, local };
+  } catch (error) {
+    await releaseLease(jobId, token).catch(() => {});
+    throw error;
   }
-  local.processing.markdownDraft=draft;local.job.updatedAt=new Date().toISOString();
-  local.processing.document.updatedAt=local.job.updatedAt;
-  await tx.objectStore("jobs").put(local);await tx.done;
+}
+export async function saveMarkdownDraft(
+  jobId: string,
+  draft: string,
+  expectedDocumentDate: string,
+  token: string,
+) {
+  const tx = (await db()).transaction(["jobs", "leases"], "readwrite");
+  const lease = await tx.objectStore("leases").get(jobId),
+    local = await tx.objectStore("jobs").get(jobId);
+  if (
+    !lease ||
+    lease.token !== token ||
+    lease.expiresAt <= Date.now() ||
+    !local?.processing?.document ||
+    local.processing.document.updatedAt !== expectedDocumentDate
+  ) {
+    tx.abort();
+    await tx.done.catch(() => {});
+    throw new Error(
+      "Gli appunti sono cambiati in un’altra scheda. Copia le tue modifiche prima di ricaricare la pagina.",
+    );
+  }
+  local.processing.markdownDraft = draft;
+  local.job.updatedAt = new Date().toISOString();
+  local.processing.document.updatedAt = local.job.updatedAt;
+  await tx.objectStore("jobs").put(local);
+  await tx.done;
 }
 export async function renewLease(jobId: string, token: string) {
   const transaction = (await db()).transaction("leases", "readwrite");
@@ -147,13 +170,16 @@ export async function savePreparedChunk(
   await transaction.objectStore("jobs").put(local);
   await transaction.done;
 }
-export async function removeJob(jobId: string) {
+export async function removeJob(
+  jobId: string,
+  options: { interrupt?: boolean } = {},
+) {
   const transaction = (await db()).transaction(
     ["jobs", "chunks", "leases"],
     "readwrite",
   );
   const lease = await transaction.objectStore("leases").get(jobId);
-  if (lease && lease.expiresAt > Date.now()) {
+  if (!options.interrupt && lease && lease.expiresAt > Date.now()) {
     await transaction.done;
     throw new Error("Metti in pausa la lezione prima di eliminarla.");
   }

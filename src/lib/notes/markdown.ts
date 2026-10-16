@@ -1,13 +1,14 @@
 import type { LectureDocument, InlineContent } from "@/lib/shared/types";
 import { timestamp } from "@/lib/transcription/merge";
+import { documentHeading } from "@/lib/pdf/naming";
 const content = (parts: InlineContent[]) =>
   parts
     .map((p) => (p.bold ? `**${p.text}**` : p.italic ? `*${p.text}*` : p.text))
     .join("");
 export function documentMarkdown(document: LectureDocument) {
   const lines = [
+    `# ${documentHeading(document)}`,
     `# ${document.title}`,
-    document.subject ? `Materia: ${document.subject}` : "",
     !document.complete
       ? "> Dispensa parziale: sono presenti segmenti non trascritti."
       : "",

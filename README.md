@@ -6,19 +6,40 @@ Registrazioni universitarie trasformate in trascrizioni, appunti modificabili e 
 
 Login/sessione confermati dal proprietario su Samsung S26 Chrome. Anche la correzione MP3 è confermata dal log di produzione: 8.574.676 byte, 35 min 43 s, 13 segmenti, 5,4 s di preparazione, zero errori e nessun motore WASM.
 
-Questa versione collega trascrizione Groq, generazione delle dispense, editor Markdown, esportazione e PDF in Web Worker. Aggiunge barre delle quote giornaliere, distinguendo consumo confermato e prenotazioni. Il nuovo flusso completo va collaudato sul dominio dopo il commit/push del proprietario; il successo della preparazione MP3 non prova ancora la trascrizione di quella lezione o la compatibilità iPad.
+Il proprietario ha ora confermato anche il flusso completo sul Samsung S26 Chrome: log `cb150a6c`, MP3 6.291.607 byte / 232,896 s, 2 segmenti preparati in 3,281 s, trascrizione e appunti completati in 146,336 s incluse due attese quota recuperate automaticamente; 12 sezioni, zero lacune, PDF 646.554 byte creato in 3,483 s. È una prova reale di quasi quattro minuti, distinta dal precedente test di sola preparazione da 35 minuti.
+
+Questa revisione aggiunge installazione sul telefono, scorrimenti ai controlli attivi, avvio senza checkbox, cancellazione in ogni fase e conservazione delle lingue nelle nuove lezioni. Rimuove l’anteprima PDF incorporata. Le nuove modifiche vanno collaudate sul dominio dopo il commit/push del proprietario; il codice pronto non equivale a un nuovo deploy.
 
 Prova integrata reale con contenuto sintetico italiano: 23,51 secondi di audio, una trascrizione, una unità di appunti e un indice; 25 secondi audio conteggiati e 1.763 token. Ripetere la trascrizione restituisce lo stesso risultato da cache senza una seconda chiamata al modello. I precedenti tentativi diagnostici con URL SDK errato restano prudenzialmente prenotati nei contatori; l’URL è corretto e coperto da un test. Nessuna registrazione dell’utente è stata inviata nei controlli automatici.
 
 ## Come si usa
 
-1. Accedere, selezionare l’audio e premere **Prepara la lezione**. File fino a 120 MB / 120 minuti; preparazione e segmenti restano sul dispositivo.
-2. Nella lezione pronta leggere l’informativa e avviare **Trascrivi e crea la dispensa**. Un solo segmento o una sola unità testuale per richiesta. La pagina deve restare in primo piano; pausa, cambio app e reload conservano le unità confermate in IndexedDB.
+1. Accedere, selezionare l’audio e premere **Prepara la lezione**, subito attivo senza checkbox. Titolo inizialmente vuoto: non viene copiato dal nome file; se omesso, il lavoro è salvato come Nuova lezione. Materia facoltativa scrivibile, con suggerimenti Italiano, Latino, Greco, Storia, Filosofia, Matematica, Scienze, Inglese. File fino a 120 MB / 120 minuti; preparazione e segmenti restano sul dispositivo.
+2. Nella lezione pronta leggere l’informativa e avviare **Trascrivi e crea il Pdf**, senza checkbox. Un solo segmento o una sola unità testuale per richiesta. La pagina deve restare in primo piano; pausa, cambio app e reload conservano le unità confermate in IndexedDB. Nuova lezione scorre al selettore audio; i comandi di avvio/ripresa scorrono al pannello di avanzamento con Metti in pausa.
 3. Le attese di quota avvengono nel browser. Se si lascia aperta la pagina, il lavoro riprende dal momento indicato; altrimenti usare **Riprendi / recupera il risultato**. Gli errori ambigui recuperano la stessa operazione, senza ripetere automaticamente l’inferenza.
 4. Se il risultato rimane indisponibile, **Autorizza un nuovo tentativo** permette una nuova chiamata, entro le quote e per massimo tre tentativi per unità. Whisper V3 è un recupero esplicito del segmento, con gli stessi contatori condivisi. Saltare un segmento richiede un’azione esplicita: rimane una lacuna, la dispensa è indicata come parziale e può essere recuperata successivamente.
-5. Consultare/scaricare la trascrizione con tempi; leggere gli appunti, modificarli e salvarli localmente. **Prepara PDF** genera il file sul dispositivo, poi **Scarica PDF** o **Apri PDF** ne permettono il salvataggio/condivisione. La seconda azione esplicita facilita Safari. L’anteprima PDF è facoltativa; quella Markdown rimane disponibile.
+5. Consultare/scaricare la trascrizione con tempi; leggere gli appunti, modificarli e salvarli localmente. **Prepara PDF** genera il file sul dispositivo e scorre allo stato; al termine la pagina scorre su **Scarica PDF**. **Apri PDF** consente di visualizzarlo nell’app/browser scelto dal dispositivo. Il comando di preparazione scompare finché il PDF corrente è disponibile; torna se si salvano modifiche al testo o dopo reload, quando il file va ricreato localmente. L’anteprima PDF incorporata è rimossa; quella Markdown rimane.
+6. **Elimina lezione** è disponibile anche durante preparazione, trascrizione, attesa quota, appunti o PDF. Una conferma popup precede interruzione, cancellazione di dati/segmenti locali e pulizia della cache della sessione. Il file audio originale sul telefono resta intatto. La revoca atomica del lease impedisce scritture tardive da altre schede; una richiesta già partita può comunque consumare quota.
 
 Il PDF supporta H1-H3, paragrafi, grassetti, elenchi numerati/puntati e citazioni. Font Noto Sans locali con licenza OFL inclusa, accenti e greco, testo selezionabile, sommario, glossario, margini A4 e numerazione. LaTeX, HTML e risorse remote non vengono interpretati; un simbolo assente dal font produce un errore esplicito, senza sostituzioni silenziose. Modifiche Markdown fino a 2 MB. Per evitare sovrapposizioni del renderer inizialmente provato, il PDF usa **PDF-LIB + fontkit** con impaginazione misurata in un worker, al posto di react-pdf. Non richiede API esterne.
+
+La prima riga del PDF riporta **Materia - gg/mm/aaaa**, in grassetto a 22 pt come il titolo successivo; senza materia rimane la data. La data è quella di creazione della dispensa, nel fuso Europe/Rome. Nome file: `Materia - Titolo - gg-mm-aaaa.pdf`, omettendo la materia se vuota. Le barre `/` non sono ammesse nei nomi file e vengono sostituite da `-`, mantenendo l’ordine italiano. Il greco politonico è incluso nel campione di verifica.
+
+## Installazione sul telefono
+
+**Installa ProfToPdf** è discreto e disponibile anche prima del login. Su Android richiama il prompt nativo Chrome quando il browser rende disponibile `beforeinstallprompt`; in caso contrario mostra, solo dopo il clic, i passaggi dal menu. Chrome può richiedere una precedente interazione e un po’ di permanenza sulla pagina prima di concedere il prompt. Non si può installare silenziosamente senza la conferma del sistema. [Criteri Chrome](https://web.dev/articles/install-criteria), [prompt di installazione](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/How_to/Trigger_install_prompt).
+
+Su iPhone/iPad il clic apre i passaggi Safari: Condividi → Aggiungi alla schermata Home → Apri come app web se presente → Aggiungi. Il pulsante scompare al rilevamento di app installata/avviata in standalone; il riconoscimento viene ricordato in questo browser. Safari non offre un rilevamento universale dell’installazione dalla normale scheda: **Ho aggiunto l’app alla Home** nasconde anche lì pulsante e istruzioni. L’archivio della web app Apple può essere separato da Safari; conservare originali ed export. [Guida Apple](https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/ios), [limiti del rilevamento](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/How_to/Create_a_standalone_app).
+
+Manifest e icone già presenti; `public/sw.js` aggiunge un service worker network-only senza cache di pagine, API, registrazioni o testo. Non rende possibile l’IA offline o il lavoro in background. Il deploy deve includere `public/sw.js` e i nuovi sorgenti; nessuna dipendenza o variabile d’ambiente aggiuntiva.
+
+## Inglese, latino e greco
+
+Le nuove lezioni usano rilevamento automatico della lingua sul servizio **transcriptions**, senza `language=it` e senza endpoint di traduzione. La materia seleziona un breve contesto controllato: italiano/inglese, italiano/latino oppure italiano/greco antico scolastico. I prompt degli appunti e dell’indice chiedono di mantenere termini, citazioni e interi passaggi nella lingua originale, conservando solo traduzioni già spiegate nell’audio. Gli interventi interamente inglesi devono quindi rimanere inglesi. [Parametri STT Groq](https://console.groq.com/docs/speech-to-text).
+
+Il riconoscimento automatico e il prompt non garantiscono correttezza su alternanza di lingue, pronuncia scolastica del latino o greco antico. Nessun prompt degli appunti può recuperare con certezza parole già trascritte male: verificare la trascrizione, usare il recupero esplicito Whisper V3 e correggere gli appunti quando necessario. Nessuna promessa di supporto dedicato al greco antico. Il collaudo acustico multilingue resta aperto.
+
+Per mantenere idempotenza e cache di operazioni interrotte durante un deploy, le lezioni/checkpoint precedenti con `language: it` conservano il vecchio profilo STT. **Creare una nuova lezione** per usare la nuova gestione delle lingue. I nuovi checkpoint salvano `language: auto`; quelli vecchi restano importabili. Non viene reinviato l’audio già trascritto.
 
 ## Audio, richieste e ripresa
 
@@ -60,7 +81,7 @@ Workflow: controlli/build locali → **commit/push soltanto dal proprietario** �
 
 ## Verifiche ripetibili
 
-Chiusura sviluppo del 16/10/2026: **39/39 test automatici**, TypeScript/configurazione/controllo credenziali e build di produzione superati. Verifica contenitori con toni sintetici WAV/MP3/M4A superata; FLAC non normalizzato rifiutato con il codice previsto. Il bundle PDF effettivo produce un campione di **12 pagine**, 120 voci di elenco, greco/accenti e zero violazioni dei margini; testo estratto e PNG ispezionati. Queste verifiche locali e la prova API sintetica descritta sopra non sostituiscono il collaudo del nuovo flusso su dispositivi reali dopo il deploy.
+Revisione mobile del 16/10/2026: **48/48 test automatici**, TypeScript/configurazione/controllo credenziali e build di produzione superati. Nuovi test coprono prompt installazione, rifiuto/accettazione/standalone, cancellazione con lease attivo e risposta STT tardiva, nomi/data/fuso, profili linguistici, budget multilingue e checkpoint compatibili. Il bundle PDF effettivo produce un campione di **13 pagine**, 120 voci di elenco, greco politonico/inglese/latino e zero violazioni dei margini; data sopra il titolo con la stessa dimensione, testo estratto e PNG ispezionati. Nessuna nuova chiamata IA o consumo di quota per questa revisione. I precedenti controlli nativi audio e API sintetici restano evidenze separate.
 
 ```text
 npm ci
@@ -77,10 +98,11 @@ In PowerShell usare `npm.cmd` se `npm.ps1` è bloccato. `check` esegue TypeScrip
 
 ## Collaudo dopo il push
 
-1. Verificare login/sessione sul dominio, barre delle quote e nuova sezione nella lezione MP3 già preparata. Nessun reinvio necessario per i segmenti ancora presenti in IndexedDB.
+1. Verificare login/sessione sul dominio, barre quote e installazione Android. Ripetere da icona installata e normale Chrome: pulsante nascosto dopo installazione riconosciuta. Su Safari aprire le istruzioni, installare e usare la conferma manuale dalla scheda se necessario.
 2. Provare prima una breve registrazione parlata, poi la lezione reale da 35 minuti. Avviare trascrizione/appunti, osservare quote e attese, scaricare il log anche in caso di successo.
 3. Durante trascrizione/appunti: pausa, reload, stesso job e ripresa. Le unità salvate non devono essere reinviate. Cambiare app mette in pausa; in due tab il lease impedisce doppie elaborazioni.
-4. Controllare trascrizione, concetti, capitoli, sommario, glossario e passaggi incerti. Modificare Markdown, salvare, preparare/scaricare/aprire il PDF; controllare accenti, grassetti, elenchi e pagine finali.
-5. Provare M4A/AAC e recupero WAV se richiesto; iPad Safari, Android Chrome, poi file da 60/120 minuti e 20-90 MB. Queste prove mobili lunghe e la qualità su lezioni universitarie umanistiche/tecniche restano aperte: test sintetici e build non le sostituiscono.
+4. Controllare titolo vuoto, materia suggerita/libera, avvio senza checkbox, scorrimenti di Nuova lezione/avvio/preparazione PDF. Verificare prima riga materia/data, titolo, nome file, assenza anteprima incorporata e sparizione di Prepara PDF dopo creazione. Modificare Markdown e verificare che la preparazione torni disponibile per la nuova versione.
+5. Su una lezione di prova, eliminare con popup durante preparazione, STT, attesa quota e PDF; ricaricare anche una seconda scheda: nessuna lezione cancellata deve ricomparire. Il consumo già effettuato rimane nei contatori.
+6. Creare nuove lezioni brevi per italiano/inglese misti, latino e greco antico; confrontare trascrizione e appunti con l’audio. Poi M4A/AAC, iPad Safari, Android Chrome e file da 60/120 minuti e 20-90 MB. Le prove lunghe e di accuratezza plurilingue restano aperte: test sintetici e build non le sostituiscono.
 
 Il piano operativo locale piano_ProfToPdf.md contiene lo stato e le evidenze delle fasi; rimane escluso dal repository.

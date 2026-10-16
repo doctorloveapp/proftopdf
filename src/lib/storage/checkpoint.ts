@@ -22,7 +22,7 @@ const schema = z
     schema: z.literal("proftopdf/checkpoint/v1"),
     title: z.string().min(1).max(200),
     subject: z.string().max(200),
-    language: z.literal("it"),
+    language: z.enum(["it", "auto"]),
     source: z
       .object({
         name: z.string().min(1).max(255),
@@ -42,7 +42,7 @@ export function exportCheckpoint(local: LocalJob) {
       schema: "proftopdf/checkpoint/v1",
       title: local.title,
       subject: local.subject,
-      language: "it",
+      language: local.manifest.language === "auto" ? "auto" : "it",
       source: local.manifest.source,
       chunks: local.manifest.chunks,
     },
@@ -85,7 +85,7 @@ export function importCheckpoint(text: string): LocalJob {
     manifest: {
       version: 1,
       jobId: id,
-      language: "it",
+      language: data.language,
       source: data.source,
       chunks: data.chunks.map((chunk) => ({
         ...chunk,

@@ -21,7 +21,7 @@ async function main() {
           type: "paragraph",
           content: [
             {
-              text: "L’energia è una grandezza fisica: qualità, quantità e possibilità di trasformazione. Le variabili α, β, γ e ω descrivono angoli e velocità. La relazione E = mc² lega massa ed energia. ".repeat(
+              text: "L’energia è una grandezza fisica: qualità, quantità e possibilità di trasformazione. Le variabili α, β, γ e ω descrivono angoli e velocità. La relazione E = mc² lega massa ed energia. English stays English; cogito ergo sum; ἄνθρωπος e λόγος. ".repeat(
                 8,
               ),
             },
@@ -55,7 +55,7 @@ async function main() {
       ],
     });
   }
-  const now = new Date().toISOString();
+  const now = "2026-10-16T22:30:00.000Z";
   const document = {
     version: 1,
     jobId: crypto.randomUUID(),
