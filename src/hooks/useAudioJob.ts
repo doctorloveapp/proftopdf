@@ -1,0 +1,146 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  prepareAudio,
+  type PreparationProgress,
+} from "@/lib/pipeline/prepare-audio";
+import {
+  listJobs,
+  reconcileJob,
+  saveJob,
+  type LocalJob,
+} from "@/lib/storage/jobs";
+
+export function useAudioJob() {
+  const [jobs, setJobs] = useState<LocalJob[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<PreparationProgress | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const controller = useRef<AbortController | null>(null);
+  const active = useRef(false),
+    mounted = useRef(true);
+  const upsert = useCallback((local: LocalJob) => {
+    if (mounted.current)
+      setJobs((old) => [
+        local,
+        ...old.filter((entry) => entry.job.id !== local.job.id),
+      ]);
+  }, []);
+  const refresh = useCallback(async () => {
+    const restored = await Promise.all((await listJobs()).map(reconcileJob));
+    if (mounted.current) {
+      setJobs(restored);
+      setSelectedId((id) => id ?? restored[0]?.job.id ?? null);
+    }
+  }, []);
+  useEffect(() => {
+    mounted.current = true;
+    refresh().catch(() =>
+      setError(
+        "Archivio locale non disponibile. Verifica lo spazio e le impostazioni del browser.",
+      ),
+    );
+    const hide = () => {
+      if (document.hidden) controller.current?.abort();
+    };
+    const pageHide = () => controller.current?.abort();
+    document.addEventListener("visibilitychange", hide);
+    window.addEventListener("pagehide", pageHide);
+    return () => {
+      mounted.current = false;
+      controller.current?.abort();
+      document.removeEventListener("visibilitychange", hide);
+      window.removeEventListener("pagehide", pageHide);
+    };
+  }, [refresh]);
+  const start = useCallback(
+    async (file: File, title: string, subject: string, existing?: LocalJob) => {
+      if (active.current) return;
+      active.current = true;
+      setBusy(true);
+      setError("");
+      const aborter = new AbortController();
+      controller.current = aborter;
+      const id = crypto.randomUUID(),
+        now = new Date().toISOString();
+      const local: LocalJob = existing ?? {
+        title: (
+          title.trim() ||
+          file.name.replace(/\.[^.]+$/, "") ||
+          "Nuova lezione"
+        ).slice(0, 200),
+        subject: subject.trim(),
+        preparedChunkIds: [],
+        manifest: {
+          version: 1,
+          jobId: id,
+          language: "it",
+          source: {
+            name: file.name,
+            byteLength: file.size,
+            durationSeconds: 0,
+            sha256: "",
+            mimeType: file.type,
+          },
+          chunks: [],
+        },
+        job: {
+          version: 1,
+          id,
+          stage: "selected",
+          createdAt: now,
+          updatedAt: now,
+          sourceFingerprint: "",
+          completedChunkIds: [],
+          completedNotesUnitIds: [],
+          retryAt: null,
+          error: null,
+        },
+      };
+      setSelectedId(local.job.id);
+      try {
+        if (!existing) await saveJob(local);
+        upsert(local);
+        const result = await prepareAudio(
+          file,
+          local,
+          aborter.signal,
+          (entry, value) => {
+            upsert(entry);
+            if (mounted.current) setProgress(value);
+          },
+        );
+        upsert(result);
+      } catch (error) {
+        if (mounted.current)
+          setError(
+            error instanceof Error ? error.message : "Preparazione interrotta.",
+          );
+        await refresh().catch(() => {});
+      } finally {
+        active.current = false;
+        controller.current = null;
+        if (mounted.current) {
+          setBusy(false);
+          setProgress(null);
+        }
+      }
+    },
+    [refresh, upsert],
+  );
+  return {
+    jobs,
+    selectedId,
+    setSelectedId,
+    progress,
+    busy,
+    error,
+    setError,
+    start,
+    pause: () => controller.current?.abort(),
+    cancel: () => controller.current?.abort("cancelled"),
+    refresh,
+  };
+}

@@ -2,9 +2,12 @@
   "name": "proftopdf",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/prepare-ffmpeg.mjs",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
@@ -12,12 +15,18 @@
     "check:configuration": "node --import tsx scripts/check-configuration.ts",
     "check:repository": "node scripts/check-repository.mjs",
     "verify:infra": "node scripts/verify-infrastructure.mjs",
+    "verify:quotas": "node --import tsx scripts/verify-atomic-quota.ts",
+    "verify:auth": "node --conditions=react-server --import tsx scripts/verify-auth.ts",
     "assets:generate": "node scripts/generate-brand-assets.mjs",
     "test": "node --import tsx --test tests/unit/*.test.ts"
   },
   "dependencies": {
+    "@ffmpeg/core": "0.12.10",
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@noble/hashes": "2.4.0",
     "@upstash/redis": "1.39.0",
     "groq-sdk": "1.6.0",
+    "idb": "8.0.4",
     "next": "16.4.2",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -29,6 +38,8 @@
     "@types/node": "^22.18.10",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "fake-indexeddb": "6.2.6",
+    "prettier": "3.9.10",
     "sharp": "^0.34.4",
     "tailwindcss": "4.3.3",
     "tsx": "^4.20.6",

@@ -32,16 +32,25 @@ export interface TranscriptSegment {
   startSeconds: number;
   endSeconds: number;
   text: string;
-  status: 'confirmed' | 'uncertain' | 'missing';
+  status: "confirmed" | "uncertain" | "missing";
   confidence?: number;
 }
 
 export type InlineContent = { text: string; bold?: boolean; italic?: boolean };
 export type DocumentBlock =
-  | { type: 'paragraph'; content: InlineContent[]; sourceSegmentIds: string[] }
-  | { type: 'list'; ordered: boolean; items: InlineContent[][]; sourceSegmentIds: string[] }
-  | { type: 'key-concept'; content: InlineContent[]; sourceSegmentIds: string[] }
-  | { type: 'uncertainty'; text: string; sourceSegmentIds: string[] };
+  | { type: "paragraph"; content: InlineContent[]; sourceSegmentIds: string[] }
+  | {
+      type: "list";
+      ordered: boolean;
+      items: InlineContent[][];
+      sourceSegmentIds: string[];
+    }
+  | {
+      type: "key-concept";
+      content: InlineContent[];
+      sourceSegmentIds: string[];
+    }
+  | { type: "uncertainty"; text: string; sourceSegmentIds: string[] };
 
 export interface LectureSection {
   id: string;
@@ -66,7 +75,7 @@ export interface LectureDocument {
 }
 
 export interface QuotaWindow {
-  resource: 'audio-seconds' | 'tokens' | 'requests' | 'redis-commands';
+  resource: "audio-seconds" | "tokens" | "requests" | "redis-commands";
   windowSeconds: number;
   limit: number;
   used: number;
@@ -78,15 +87,25 @@ export interface QuotaWindow {
 export interface QuotaState {
   checkedAt: string;
   available: boolean;
-  provider: 'groq' | 'upstash';
+  provider: "groq" | "upstash";
   model: string | null;
   windows: QuotaWindow[];
-  reason: 'available' | 'quota-exhausted' | 'unavailable' | 'disabled';
+  reason: "available" | "quota-exhausted" | "unavailable" | "disabled";
 }
 
 export type ProcessingStage =
-  | 'selected' | 'analyzing' | 'preparing' | 'transcribing' | 'waiting-quota'
-  | 'generating-notes' | 'generating-pdf' | 'paused' | 'completed' | 'cancelled' | 'failed';
+  | "selected"
+  | "analyzing"
+  | "preparing"
+  | "transcribing"
+  | "waiting-quota"
+  | "ready"
+  | "generating-notes"
+  | "generating-pdf"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed";
 
 export interface ProcessingJob {
   version: 1;
@@ -108,4 +127,5 @@ export interface AppError {
   retryAt: string | null;
 }
 
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: AppError };
+export type ApiResult<T> =
+  { ok: true; data: T } | { ok: false; error: AppError };
