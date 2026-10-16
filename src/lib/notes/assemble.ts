@@ -17,8 +17,10 @@ export interface TextUnit {
   id: string;
   sources: SourceItem[];
 }
-const originalSources=(ids:string[])=>[...new Set(ids.map((id)=>id.replace(/p\d+$/,"")))];
-function unitId(prefix: string, index: number, sources: SourceItem[]) {
+const originalSources = (ids: string[]) => [
+  ...new Set(ids.map((id) => id.replace(/p\d+$/, ""))),
+];
+export function unitId(prefix: string, index: number, sources: SourceItem[]) {
   const hash = sha256(new TextEncoder().encode(JSON.stringify(sources)));
   return `${prefix}-${index}-${Array.from(hash.subarray(0, 8), (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
@@ -102,7 +104,7 @@ export function materializeSections(
 ): LectureSection[] {
   return units.flatMap((unit) =>
     (outputs[unit.id]?.sections ?? []).map((section, i) => {
-      const sourceIds=originalSources(section.sourceIds);
+      const sourceIds = originalSources(section.sourceIds);
       const blocks: DocumentBlock[] = [
         ...section.paragraphs.map((text) => ({
           type: "paragraph" as const,
@@ -170,9 +172,10 @@ export function assembleDocument(options: {
   units: TextUnit[];
   notes: Record<string, NotesOutput>;
   outlines: Record<string, OutlineOutput>;
+  outlineUnits?: TextUnit[];
 }): LectureDocument {
   const sections = materializeSections(options.units, options.notes),
-    outlineUnits = buildOutlineUnits(sections),
+    outlineUnits = options.outlineUnits ?? buildOutlineUnits(sections),
     byId = new Map(sections.map((s) => [s.id, s]));
   const final: LectureSection[] = [];
   for (const unit of outlineUnits) {
@@ -187,7 +190,9 @@ export function assembleDocument(options: {
           title: chapter.title,
           level: 1,
           blocks: [],
-          sourceSegmentIds: [...new Set(children.flatMap((s) => s!.sourceSegmentIds))],
+          sourceSegmentIds: [
+            ...new Set(children.flatMap((s) => s!.sourceSegmentIds)),
+          ],
         },
         ...(children as LectureSection[]),
       );
@@ -200,7 +205,10 @@ export function assembleDocument(options: {
         prior = glossary.get(key);
       if (prior)
         prior.sourceSegmentIds = [
-          ...new Set([...prior.sourceSegmentIds, ...originalSources(term.sourceIds)]),
+          ...new Set([
+            ...prior.sourceSegmentIds,
+            ...originalSources(term.sourceIds),
+          ]),
         ];
       else
         glossary.set(key, {

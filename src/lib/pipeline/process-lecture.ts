@@ -12,6 +12,7 @@ import {
 import {
   emptyProcessing,
   MAX_ATTEMPTS,
+  REPAIRABLE_NOTES_CODES,
   type ChunkTranscript,
   type NotesRequest,
   type NotesOutput,
@@ -22,7 +23,6 @@ import { transcriptionProfile } from "@/lib/shared/lecture";
 import type { PreparationProgress } from "./prepare-audio";
 import { mergeTranscripts } from "@/lib/transcription/merge";
 import {
-  buildTextUnits,
   materializeSections,
   buildOutlineUnits,
   assembleDocument,
@@ -185,6 +185,9 @@ export async function processLecture(
             attempt,
             code: known?.code ?? "NETWORK",
             status: known?.status ?? 0,
+            ...(known?.diagnostics
+              ? { validation: JSON.stringify(known.diagnostics).slice(0, 1200) }
+              : {}),
           },
           "error",
         );
@@ -197,6 +200,24 @@ export async function processLecture(
           await adapter.wait(known.retryAt, combined, emit);
           current.job.retryAt = null;
           message = "Quota disponibile, ripresa in corso";
+          continue;
+        }
+        // Definitive invalid output is different from a lost/ambiguous reply.
+        // Each repair gets its own persisted, quota-reserved attempt (max 3).
+        if (
+          stage === "generating-notes" &&
+          known &&
+          REPAIRABLE_NOTES_CODES.has(known.code) &&
+          (data.attempts[key] ?? 0) < MAX_ATTEMPTS - 1
+        ) {
+          increment(key);
+          message = `Correzione dell’unità di appunti: tentativo ${(data.attempts[key] ?? 0) + 1} di ${MAX_ATTEMPTS}`;
+          log("notes.repair", {
+            unit: key,
+            attempt: data.attempts[key],
+            reason: known.code,
+          });
+          await save(stage);
           continue;
         }
         // Repeating the SAME operation only retrieves cache; it never starts a
@@ -214,11 +235,29 @@ export async function processLecture(
   try {
     if (!current.manifest.chunks.length || !current.job.sourceFingerprint)
       throw new Error("Prepara prima la registrazione.");
+    const priorError = current.job.error;
     current.job.error = null;
     log("processing.start", {
       chunks: current.manifest.chunks.length,
       resume: Object.keys(data.transcripts).length > 0,
     });
+    if (
+      !options.newAttempt &&
+      !options.accurate &&
+      data.failedUnitId &&
+      priorError &&
+      REPAIRABLE_NOTES_CODES.has(priorError.code) &&
+      (data.attempts[data.failedUnitId] ?? 0) < MAX_ATTEMPTS - 1
+    ) {
+      increment(data.failedUnitId);
+      log("notes.repair", {
+        unit: data.failedUnitId,
+        attempt: data.attempts[data.failedUnitId],
+        reason: priorError.code,
+        resumed: true,
+      });
+      await save("generating-notes");
+    }
     if (options.recoverIndex !== undefined) {
       const chunk = current.manifest.chunks[options.recoverIndex];
       if (!chunk) throw new Error("Segmento da recuperare non valido.");
@@ -304,8 +343,28 @@ export async function processLecture(
         segments: response.segments.length,
       });
     }
-    const segments = mergeTranscripts(current.manifest, data.transcripts),
-      units = buildTextUnits(segments);
+    const segments = mergeTranscripts(current.manifest, data.transcripts);
+    message = "Organizzazione del testo entro il budget gratuito";
+    await save("generating-notes");
+    const { planNotes, groupTextSources } =
+      await import("@/lib/notes/batching");
+    abortIfNeeded(combined);
+    const context = {
+      jobId: current.job.id,
+      title: current.title,
+      subject: current.subject,
+      ...(current.manifest.language === "auto"
+        ? { languagePolicy: "original" as const }
+        : {}),
+    };
+    data.notesPlan = await planNotes(segments, data, context, combined);
+    const units = data.notesPlan.units;
+    log("notes.plan", {
+      units: units.length,
+      confirmed: units.filter((unit) => data.notes[unit.id]).length,
+      policy: data.notesPlan.version,
+    });
+    await save("generating-notes");
     if (!units.length)
       throw new Error(
         "Non ci sono parti trascritte da trasformare in appunti.",
@@ -356,8 +415,13 @@ export async function processLecture(
     }
     for (const [index, unit] of units.entries())
       await generate(unit, "notes", index, units.length);
-    const outlineUnits = buildOutlineUnits(
-      materializeSections(units, data.notes),
+    const outlineUnits = await groupTextSources(
+      buildOutlineUnits(materializeSections(units, data.notes)).flatMap(
+        (unit) => unit.sources,
+      ),
+      context,
+      "outline",
+      combined,
     );
     for (const [index, unit] of outlineUnits.entries())
       await generate(unit, "outline", index, outlineUnits.length);
@@ -369,6 +433,7 @@ export async function processLecture(
       units,
       notes: data.notes,
       outlines: data.outlines,
+      outlineUnits,
     });
     current.job.error = null;
     current.job.retryAt = null;
@@ -398,6 +463,9 @@ export async function processLecture(
             error instanceof Error ? error.message : "Elaborazione interrotta.",
           recoverable: true,
           retryAt: error instanceof ClientApiError ? error.retryAt : null,
+          ...(error instanceof ClientApiError && error.diagnostics
+            ? { diagnostics: error.diagnostics }
+            : {}),
         };
     current.job.updatedAt = new Date().toISOString();
     log(

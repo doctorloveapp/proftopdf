@@ -103,7 +103,7 @@ function decode(result: unknown): Result {
   return parsed as Result;
 }
 
-// Internal API only: callers must verify audio duration or the token upper bound
+// Internal API only: callers must verify audio duration or compute the token reservation
 // on the server. Never expose a reservation endpoint accepting client costs.
 export async function reserveQuota(
   kind: "stt" | "notes",

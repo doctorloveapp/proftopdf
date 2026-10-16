@@ -1,9 +1,12 @@
+import type { ErrorDiagnostics } from "@/lib/shared/types";
 export class RouteError extends Error {
+  confirmedUsage?: number;
   constructor(
     public status: number,
     public code: string,
     message: string,
     public retryAt: string | null = null,
+    public diagnostics?: ErrorDiagnostics,
   ) {
     super(message);
   }

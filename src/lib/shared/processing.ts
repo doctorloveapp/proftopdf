@@ -3,8 +3,17 @@ import type { LectureDocument } from "./types";
 
 export const PROCESSING_REVISION = "pipeline-2026-10-16-v1";
 export const NOTES_SOURCE_BYTES = 1200;
-export const NOTES_MAX_OUTPUT = 1800;
+export const NOTES_MAX_OUTPUT = 2400;
 export const MAX_ATTEMPTS = 3;
+export const NOTES_RESULT_BYTES = 44_000;
+export const REPAIRABLE_NOTES_CODES = new Set([
+  "NOTES_INVALID",
+  "NOTES_JSON",
+  "NOTES_EMPTY",
+  "NOTES_CONTENT",
+  "NOTES_COVERAGE",
+  "NOTES_TRUNCATED",
+]);
 export const idSchema = z.string().uuid();
 export const sourceItemSchema = z
   .object({
@@ -33,58 +42,48 @@ export const notesRequestSchema = z
 export type NotesRequest = z.infer<typeof notesRequestSchema>;
 export const notesOutputSchema = z
   .object({
-    sections: z
-      .array(
-        z
-          .object({
-            title: z.string().min(1).max(200),
-            paragraphs: z.array(z.string().min(1).max(4000)).max(8),
-            bullets: z.array(z.string().min(1).max(1500)).max(12),
-            concepts: z.array(z.string().min(1).max(1500)).max(8),
-            sourceIds: z.array(z.string()).min(1).max(30),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(5),
-    glossary: z
-      .array(
-        z
-          .object({
-            term: z.string().min(1).max(100),
-            definition: z.string().min(1).max(1500),
-            sourceIds: z.array(z.string()).min(1).max(30),
-          })
-          .strict(),
-      )
-      .max(8),
-    uncertainties: z
-      .array(
-        z
-          .object({
-            text: z.string().min(1).max(1500),
-            sourceIds: z.array(z.string()).min(1).max(30),
-          })
-          .strict(),
-      )
-      .max(8),
-    coveredSourceIds: z.array(z.string()).min(1).max(30),
+    sections: z.array(
+      z
+        .object({
+          title: z.string(),
+          paragraphs: z.array(z.string()),
+          bullets: z.array(z.string()),
+          concepts: z.array(z.string()),
+          sourceIds: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    glossary: z.array(
+      z
+        .object({
+          term: z.string(),
+          definition: z.string(),
+          sourceIds: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    uncertainties: z.array(
+      z
+        .object({
+          text: z.string(),
+          sourceIds: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    coveredSourceIds: z.array(z.string()),
   })
   .strict();
 export type NotesOutput = z.infer<typeof notesOutputSchema>;
 export const outlineOutputSchema = z
   .object({
-    chapters: z
-      .array(
-        z
-          .object({
-            title: z.string().min(1).max(200),
-            sectionIds: z.array(z.string()).min(1).max(30),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(12),
+    chapters: z.array(
+      z
+        .object({
+          title: z.string(),
+          sectionIds: z.array(z.string()),
+        })
+        .strict(),
+    ),
   })
   .strict();
 export type OutlineOutput = z.infer<typeof outlineOutputSchema>;
@@ -106,6 +105,11 @@ export interface ProcessingData {
   failedChunkIndex?: number;
   failedUnitId?: string;
   markdownDraft?: string;
+  notesPlan?: {
+    version: "bpe-v1";
+    sourceDigest: string;
+    units: { id: string; sources: SourceItem[] }[];
+  };
 }
 export function emptyProcessing(): ProcessingData {
   return {

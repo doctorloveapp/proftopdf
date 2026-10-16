@@ -28,6 +28,7 @@ export function routeError(error: unknown) {
         message: known.message,
         recoverable: [409, 429, 502, 503, 504].includes(known.status),
         retryAt: known.retryAt,
+        ...(known.diagnostics ? { diagnostics: known.diagnostics } : {}),
       },
     },
     known.status,

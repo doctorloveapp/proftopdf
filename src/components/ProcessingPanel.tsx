@@ -24,6 +24,7 @@ import {
 } from "@/lib/audio/diagnostics";
 import { formatTiming, type TimingSummary } from "@/lib/audio/timing";
 import type { ProcessingOptions } from "@/lib/pipeline/process-lecture";
+import { MAX_ATTEMPTS } from "@/lib/shared/processing";
 import { documentFileStem } from "@/lib/pdf/naming";
 import { scrollToControl } from "@/lib/client/scroll";
 
@@ -103,6 +104,9 @@ export default function ProcessingPanel({
   const failed = local.job.stage === "failed";
   const hasFailure =
     data?.failedChunkIndex !== undefined || Boolean(data?.failedUnitId);
+  const failureKey = data?.failedUnitId ?? `stt-${data?.failedChunkIndex}`;
+  const attemptsRemaining =
+    (data?.attempts[failureKey] ?? 0) < MAX_ATTEMPTS - 1;
   const filename = documentFileStem(
     lecture ?? {
       title: local.title,
@@ -263,13 +267,20 @@ export default function ProcessingPanel({
           {failed && hasFailure && (
             <div className="recovery-actions">
               <p className="local-note">
-                Il recupero usa la stessa richiesta. Un nuovo tentativo può
-                consumare altra quota, anche se una risposta precedente è andata
-                persa.
+                La trascrizione e gli appunti già salvati vengono riutilizzati.
+                Le risposte appunti certamente invalide ricevono al massimo tre
+                tentativi, rispettando le quote. Una risposta persa viene prima
+                recuperata senza nuova inferenza.
               </p>
+              {!attemptsRemaining && (
+                <p className="local-note">
+                  Tre tentativi già utilizzati per questa unità. Esporta il log
+                  per verificare la causa; il lavoro confermato è conservato.
+                </p>
+              )}
               <button
                 className="button button-secondary"
-                disabled={saving}
+                disabled={saving || !attemptsRemaining}
                 onClick={() => onProcess({ newAttempt: true })}
               >
                 Autorizza un nuovo tentativo

@@ -13,9 +13,9 @@ import { ownerKey, runAiOperation } from "@/lib/server/operation";
 import {
   notesRequestSchema,
   PROCESSING_REVISION,
-  utf8Bytes,
 } from "@/lib/shared/processing";
-import { buildNotesRequest, validateNotesOutput } from "@/lib/notes/request";
+import { buildNotesRequest } from "@/lib/notes/request";
+import { acceptNotesCompletion } from "@/lib/notes/completion";
 import { LANGUAGE_POLICY_REVISION } from "@/lib/shared/lecture";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,33 +74,26 @@ export async function POST(request: NextRequest) {
           { timeout: 90_000, maxRetries: 0 },
         );
         const choice = response.choices[0];
-        if (
-          !choice ||
-          choice.finish_reason !== "stop" ||
-          !choice.message.content
-        )
-          throw new RouteError(
-            502,
-            "NOTES_TRUNCATED",
-            "Il modello non ha completato questa unità. Il documento non verrà marcato definitivo.",
-          );
-        let raw: unknown;
+        let result;
         try {
-          raw = JSON.parse(choice.message.content);
-        } catch {
-          throw new RouteError(
-            502,
-            "NOTES_INVALID",
-            "Risposta appunti non leggibile.",
+          result = acceptNotesCompletion(
+            input,
+            choice?.finish_reason,
+            choice?.message.content,
           );
+        } catch (error) {
+          if (error instanceof RouteError) {
+            const usage = response.usage?.total_tokens;
+            if (Number.isSafeInteger(usage) && usage! >= 0)
+              error.confirmedUsage = usage;
+            console.error("[ProfToPdf notes validation]", {
+              code: error.code,
+              mode: input.mode,
+              diagnostics: error.diagnostics,
+            });
+          }
+          throw error;
         }
-        const result = validateNotesOutput(input, raw);
-        if (utf8Bytes(JSON.stringify(result)) > 44000)
-          throw new RouteError(
-            502,
-            "NOTES_SIZE",
-            "Risultato troppo grande per il recupero sicuro.",
-          );
         return {
           data: result,
           actual: response.usage?.total_tokens ?? payload.tokenUpperBound,

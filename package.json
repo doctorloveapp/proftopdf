@@ -22,6 +22,8 @@
     "verify:mp3": "node --import tsx scripts/verify-mp3.mts",
     "verify:audio-validation": "node --import tsx scripts/verify-audio-validation.mts",
     "verify:processing": "node --conditions=react-server --import tsx scripts/verify-processing.mts",
+    "verify:notes": "node --conditions=react-server --import tsx scripts/verify-notes.mts",
+    "benchmark:notes": "node --import tsx scripts/benchmark-notes.mts",
     "verify:pdf": "node scripts/verify-pdf.mjs",
     "assets:generate": "node scripts/generate-brand-assets.mjs",
     "test": "node --import tsx --test tests/unit/*.test.ts"
@@ -34,6 +36,7 @@
     "@upstash/redis": "1.39.0",
     "groq-sdk": "1.6.0",
     "idb": "8.0.4",
+    "js-tiktoken": "1.0.21",
     "next": "16.4.2",
     "pdf-lib": "1.17.1",
     "react": "19.3.1",

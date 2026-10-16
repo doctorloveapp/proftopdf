@@ -1,3 +1,4 @@
+import type { ErrorDiagnostics } from "@/lib/shared/types";
 export interface SessionInfo {
   authenticated: true;
   csrfToken: string;
@@ -9,6 +10,7 @@ export class ClientApiError extends Error {
     public status: number,
     public retryAt: string | null = null,
     public code = "REQUEST_FAILED",
+    public diagnostics?: ErrorDiagnostics,
   ) {
     super(message);
   }
@@ -29,6 +31,7 @@ export async function api<T>(
       response.status,
       result?.error?.retryAt ?? null,
       result?.error?.code ?? "REQUEST_FAILED",
+      result?.error?.diagnostics,
     );
   return result.data as T;
 }

@@ -18,6 +18,8 @@ import {
   emptyProcessing,
   type NotesOutput,
 } from "../../src/lib/shared/processing";
+import { buildTextUnits } from "../../src/lib/notes/assemble";
+import { mergeTranscripts } from "../../src/lib/transcription/merge";
 function initial(file: File): LocalJob {
   const id = crypto.randomUUID(),
     now = new Date().toISOString();
@@ -52,6 +54,181 @@ function initial(file: File): LocalJob {
     },
   };
 }
+
+function alreadyTranscribedLongLecture() {
+  const local = initial(new File(["synthetic metadata only"], "physics.mp3"));
+  local.job.sourceFingerprint = "a".repeat(64);
+  local.manifest.source.durationSeconds = 4252.42;
+  local.processing = emptyProcessing();
+  local.manifest.chunks = Array.from({ length: 33 }, (_, index) => ({
+    id: `${local.job.id}:${index}`,
+    index,
+    startSeconds: (index * 4252.42) / 33,
+    endSeconds: ((index + 1) * 4252.42) / 33,
+    overlapSeconds: 0,
+    byteLength: 100,
+    sha256: "a".repeat(64),
+    mimeType: "audio/mpeg",
+    container: "mp3" as const,
+    codec: "mp3" as const,
+  }));
+  for (const chunk of local.manifest.chunks)
+    local.processing.transcripts[chunk.id] = {
+      sha256: chunk.sha256,
+      model: "synthetic",
+      status: "transcribed",
+      durationSeconds: chunk.endSeconds - chunk.startSeconds,
+      segments: [
+        {
+          start: 0,
+          end: chunk.endSeconds - chunk.startSeconds,
+          text: `Tema ${chunk.index}. La forza risultante e la massa determinano l’accelerazione. F = ma. `.repeat(
+            12,
+          ),
+          uncertain: false,
+        },
+      ],
+    };
+  local.job.completedChunkIds = local.manifest.chunks.map((c) => c.id);
+  return local;
+}
+const syntheticNotes = (ids: string[]): NotesOutput => ({
+  sections: [
+    {
+      title: "Dinamica",
+      paragraphs: ["La forza produce accelerazione: F = ma."],
+      bullets: [],
+      concepts: [],
+      sourceIds: ids,
+    },
+  ],
+  glossary: [],
+  uncertainties: [],
+  coveredSourceIds: ids,
+});
+test("A failed 70-minute job resumes after two quota waits and invalid notes without resending its 33 transcripts or two saved notes", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    data = local.processing!;
+  const legacy = buildTextUnits(
+    mergeTranscripts(local.manifest, data.transcripts),
+  );
+  for (const unit of legacy.slice(0, 2))
+    data.notes[unit.id] = syntheticNotes(unit.sources.map((s) => s.id));
+  data.failedUnitId = `notes-${legacy[2].id}`;
+  local.job.stage = "failed";
+  local.job.error = {
+    code: "NOTES_INVALID",
+    message: "Legacy validation failure",
+    recoverable: true,
+    retryAt: null,
+  };
+  await saveJob(local);
+  let audioCalls = 0,
+    waits = 0,
+    repaired = false;
+  const attempts: number[] = [],
+    noteIds: string[] = [];
+  const result = await processLecture(
+    local,
+    "synthetic",
+    new AbortController().signal,
+    () => {},
+    {},
+    {
+      transcribe: async () => {
+        audioCalls++;
+        throw new Error("Confirmed audio must not be sent again");
+      },
+      wait: async () => {
+        waits++;
+      },
+      notes: async (input) => {
+        if (input.mode === "outline")
+          return {
+            chapters: [
+              { title: "Dinamica", sectionIds: input.sources.map((s) => s.id) },
+            ],
+          };
+        noteIds.push(input.unitId);
+        if (input.unitId === legacy[2].id) {
+          attempts.push(input.attempt);
+          if (waits < 2)
+            throw new ClientApiError(
+              "Quota",
+              429,
+              new Date(Date.now() + 60_000).toISOString(),
+              "QUOTA_EXHAUSTED",
+            );
+          if (!repaired) {
+            repaired = true;
+            throw new ClientApiError(
+              "Invalid structure at sections.0.paragraphs",
+              502,
+              null,
+              "NOTES_INVALID",
+              {
+                stage: "structure",
+                issueCount: 1,
+                issues: [
+                  {
+                    path: "sections.0.paragraphs",
+                    code: "invalid_type",
+                    expected: "array",
+                  },
+                ],
+              },
+            );
+          }
+        }
+        return syntheticNotes(input.sources.map((s) => s.id));
+      },
+    },
+  );
+  assert.equal(result.job.stage, "completed");
+  assert.equal(result.processing?.document?.complete, true);
+  assert.equal(audioCalls, 0);
+  assert.equal(waits, 2);
+  assert.deepEqual(attempts, [1, 1, 1, 2]);
+  assert(!noteIds.includes(legacy[0].id) && !noteIds.includes(legacy[1].id));
+  assert(result.processing!.notesPlan!.units.length < legacy.length);
+  await removeJob(local.job.id);
+});
+test("Invalid notes stop after three persisted attempts rather than retrying indefinitely", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    attempts: number[] = [];
+  await saveJob(local);
+  await assert.rejects(
+    () =>
+      processLecture(
+        local,
+        "synthetic",
+        new AbortController().signal,
+        () => {},
+        {},
+        {
+          transcribe: async () => {
+            throw new Error("Unexpected audio");
+          },
+          wait: async () => {},
+          notes: async (input) => {
+            attempts.push(input.attempt);
+            throw new ClientApiError("Invalid", 502, null, "NOTES_INVALID");
+          },
+        },
+      ),
+    { code: "NOTES_INVALID" },
+  );
+  assert.deepEqual(attempts, [0, 1, 2]);
+  const saved = (await listJobs()).find((j) => j.job.id === local.job.id)!;
+  assert.equal(saved.job.stage, "failed");
+  assert.equal(saved.processing!.attempts[saved.processing!.failedUnitId!], 2);
+  assert.equal(Object.keys(saved.processing!.transcripts).length, 33);
+  await removeJob(local.job.id);
+});
 
 test("Deleting during an in-flight transcription never restores the job or starts notes from a late response", async (t) => {
   t.mock.method(console, "info", () => {});

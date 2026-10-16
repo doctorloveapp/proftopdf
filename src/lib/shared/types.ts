@@ -125,6 +125,13 @@ export interface AppError {
   message: string;
   recoverable: boolean;
   retryAt: string | null;
+  diagnostics?: ErrorDiagnostics;
+}
+/** Schema locations/codes only. Never content, raw model errors or credentials. */
+export interface ErrorDiagnostics {
+  stage: "structure" | "content" | "coverage" | "json" | "completion" | "size";
+  issueCount: number;
+  issues: { path: string; code: string; expected?: string }[];
 }
 
 export type ApiResult<T> =

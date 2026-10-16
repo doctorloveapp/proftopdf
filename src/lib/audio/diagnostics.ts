@@ -9,7 +9,7 @@ import {
   type TimingSummary,
 } from "./timing";
 
-export const AUDIO_REVISION = "library-timing-2026-10-17-v3";
+export const AUDIO_REVISION = "notes-recovery-2026-10-17-v4";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;

@@ -1,10 +1,12 @@
 import { RouteError } from "./http-core";
+import type { ErrorDiagnostics } from "@/lib/shared/types";
 
 interface Failure {
   status: number;
   code: string;
   message: string;
   retryAt: string | null;
+  diagnostics?: ErrorDiagnostics;
 }
 type Outcome<T> = { ok: true; data: T } | { ok: false; error: Failure };
 export interface OperationDependencies {
@@ -28,6 +30,7 @@ export async function performOperation<T>(
       replay.error.code,
       replay.error.message,
       replay.error.retryAt,
+      replay.error.diagnostics,
     );
   }
   const reservation = await dependencies.reserve();
@@ -40,6 +43,7 @@ export async function performOperation<T>(
         cached.error.code,
         cached.error.message,
         cached.error.retryAt,
+        cached.error.diagnostics,
       );
     throw new RouteError(
       409,
@@ -61,10 +65,18 @@ export async function performOperation<T>(
           code: failure.code,
           message: failure.message,
           retryAt: failure.retryAt,
+          ...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}),
         },
       })
       .catch(() => false);
-    // Uncertain/failed calls keep their reservation. No automatic paid retry.
+    // A definitive invalid response may include verified provider usage. Charge
+    // that usage, not the entire reservation. Missing/ambiguous usage stays held.
+    if (
+      error instanceof RouteError &&
+      Number.isSafeInteger(error.confirmedUsage) &&
+      error.confirmedUsage! >= 0
+    )
+      await dependencies.settle(error.confirmedUsage!).catch(() => {});
     throw failure;
   }
   // Cache before reconciliation: if Redis fails here, preserve the reservation.
