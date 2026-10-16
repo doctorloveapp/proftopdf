@@ -24,6 +24,12 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        source: "/pdf/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=0, must-revalidate" },
+        ],
+      },
+      {
         source: "/ffmpeg/v0.12.15-core0.12.10/core/ffmpeg-core.wasm",
         headers: [{ key: "Content-Type", value: "application/wasm" }],
       },

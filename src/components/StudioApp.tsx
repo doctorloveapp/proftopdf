@@ -123,6 +123,7 @@ export default function StudioApp() {
       ) : session ? (
         <>
           <StudioWorkspace
+            csrfToken={session.csrfToken}
             onSessionExpired={() => {
               setSession(null);
               setError("Accedi di nuovo per continuare.");

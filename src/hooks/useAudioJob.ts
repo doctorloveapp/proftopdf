@@ -13,6 +13,10 @@ import {
 } from "@/lib/storage/jobs";
 import { createAudioLog } from "@/lib/audio/diagnostics";
 import { audioFailure } from "@/lib/audio/errors";
+import {
+  processLecture,
+  type ProcessingOptions,
+} from "@/lib/pipeline/process-lecture";
 
 export function useAudioJob() {
   const [jobs, setJobs] = useState<LocalJob[]>([]);
@@ -20,6 +24,7 @@ export function useAudioJob() {
   const [progress, setProgress] = useState<PreparationProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [quotaRevision, setQuotaRevision] = useState(0);
   const controller = useRef<AbortController | null>(null);
   const active = useRef(false),
     mounted = useRef(true);
@@ -116,6 +121,9 @@ export function useAudioJob() {
             if (mounted.current) setProgress(value);
           },
           log,
+          ["AUDIO_NORMALIZATION_REQUIRED", "MP3_FREE_FORMAT"].includes(
+            existing?.job.error?.code ?? "",
+          ),
         );
         upsert(result);
       } catch (error) {
@@ -137,6 +145,52 @@ export function useAudioJob() {
     },
     [refresh, upsert],
   );
+  const process = useCallback(
+    async (
+      local: LocalJob,
+      csrfToken: string,
+      options: ProcessingOptions = {},
+    ) => {
+      if (active.current) return;
+      active.current = true;
+      setBusy(true);
+      setError("");
+      const aborter = new AbortController();
+      controller.current = aborter;
+      try {
+        const result = await processLecture(
+          local,
+          csrfToken,
+          aborter.signal,
+          (entry, value) => {
+            upsert(entry);
+            if (mounted.current) setProgress(value);
+          },
+          options,
+          undefined,
+          () => {
+            if (mounted.current) setQuotaRevision((n) => n + 1);
+          },
+        );
+        upsert(result);
+      } catch (error) {
+        if (mounted.current)
+          setError(
+            error instanceof Error ? error.message : "Elaborazione interrotta.",
+          );
+        await refresh().catch(() => {});
+      } finally {
+        active.current = false;
+        controller.current = null;
+        if (mounted.current) {
+          setBusy(false);
+          setProgress(null);
+          setQuotaRevision((n) => n + 1);
+        }
+      }
+    },
+    [upsert, refresh],
+  );
   return {
     jobs,
     selectedId,
@@ -146,6 +200,8 @@ export function useAudioJob() {
     error,
     setError,
     start,
+    process,
+    quotaRevision,
     pause: () => controller.current?.abort("user-pause"),
     cancel: () => controller.current?.abort("cancelled"),
     refresh,

@@ -8,6 +8,8 @@ import { removeJob, saveJob, type LocalJob } from "@/lib/storage/jobs";
 import { importCheckpoint, exportCheckpoint } from "@/lib/storage/checkpoint";
 import { exportAudioLog, removeAudioLog } from "@/lib/audio/diagnostics";
 import type { QuotaState, ProcessingStage } from "@/lib/shared/types";
+import QuotaMeter from "./QuotaMeter";
+import ProcessingPanel from "./ProcessingPanel";
 
 const labels: Partial<Record<ProcessingStage, string>> = {
   selected: "Da preparare",
@@ -17,14 +19,20 @@ const labels: Partial<Record<ProcessingStage, string>> = {
   failed: "Da riprendere",
   ready: "Audio pronto",
   cancelled: "Annullata",
+  transcribing: "Trascrizione",
+  "waiting-quota": "In attesa della quota",
+  "generating-notes": "Creazione dispensa",
+  completed: "Dispensa pronta",
 };
 const size = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
 const minutes = (seconds: number) => `${Math.ceil(seconds / 60)} min`;
 
 export default function StudioWorkspace({
   onSessionExpired,
+  csrfToken,
 }: {
   onSessionExpired: () => void;
+  csrfToken: string;
 }) {
   const state = useAudioJob();
   const [file, setFile] = useState<File | null>(null);
@@ -66,6 +74,17 @@ export default function StudioWorkspace({
   useEffect(() => {
     void refreshQuota();
   }, []);
+  useEffect(() => {
+    if (!state.quotaRevision) return;
+    const timer = setTimeout(
+      () => void refreshQuota(),
+      state.busy ? 15_000 : 0,
+    );
+    return () => clearTimeout(timer);
+  }, [state.quotaRevision, state.busy]);
+  useEffect(() => {
+    if (selected?.job.error?.code === "UNAUTHENTICATED") onSessionExpired();
+  }, [selected?.job.error?.code, onSessionExpired]);
   function chooseFile(candidate: File | undefined) {
     if (!candidate || state.busy) return;
     try {
@@ -107,9 +126,22 @@ export default function StudioWorkspace({
     try {
       await removeJob(selected.job.id);
       removeAudioLog(selected.job.id);
+      let remoteRemoved = true;
+      try {
+        await api(`/api/jobs/${selected.job.id}`, {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrfToken },
+        });
+      } catch {
+        remoteRemoved = false;
+      }
       newLesson();
       await state.refresh();
-      setNotice("Lezione e segmenti eliminati da questo dispositivo.");
+      setNotice(
+        remoteRemoved
+          ? "Lezione, segmenti locali e cache temporanea della sessione eliminati."
+          : "Dati locali eliminati. La cache remota non è raggiungibile e scadrà automaticamente entro 15 minuti.",
+      );
     } catch (error) {
       state.setError(
         error instanceof Error ? error.message : "Eliminazione non riuscita.",
@@ -283,7 +315,7 @@ export default function StudioWorkspace({
             </div>
             {selected && (
               <span
-                className={`status-badge ${selected.job.stage === "ready" ? "is-ready" : ""}`}
+                className={`status-badge ${["ready", "completed"].includes(selected.job.stage) ? "is-ready" : ""}`}
               >
                 {labels[selected.job.stage] ?? selected.job.stage}
               </span>
@@ -303,7 +335,14 @@ export default function StudioWorkspace({
               </div>
             </div>
           )}
-          {(!selected || (selected.job.stage !== "ready" && !state.busy)) && (
+          {(!selected ||
+            (selected.job.stage !== "ready" &&
+              !selected.processing &&
+              !state.busy) ||
+            (!state.busy &&
+              ["LOCAL_AUDIO_MISSING", "AUDIO_NORMALIZATION_REQUIRED"].includes(
+                selected.job.error?.code ?? "",
+              ))) && (
             <>
               <div
                 className={`drop-zone ${dragging ? "is-dragging" : ""}`}
@@ -387,9 +426,8 @@ export default function StudioWorkspace({
                 />
                 <span>
                   Posso utilizzare questa registrazione. In questa preparazione
-                  l’audio resta sul dispositivo; quando sarà attiva la
-                  trascrizione, i segmenti verranno inviati a Groq tramite
-                  ProfToPdf.
+                  l’audio resta sul dispositivo; avviando la trascrizione, i
+                  segmenti verranno inviati a Groq tramite ProfToPdf.
                 </span>
               </label>
               <button
@@ -399,7 +437,11 @@ export default function StudioWorkspace({
                   if (file) void state.start(file, title, subject, selected);
                 }}
               >
-                {selected ? "Riprendi la preparazione" : "Prepara la lezione"}{" "}
+                {selected?.job.error?.code === "AUDIO_NORMALIZATION_REQUIRED"
+                  ? "Prepara versione WAV compatibile"
+                  : selected
+                    ? "Riprendi la preparazione"
+                    : "Prepara la lezione"}{" "}
                 <span aria-hidden="true">→</span>
               </button>
             </>
@@ -412,9 +454,11 @@ export default function StudioWorkspace({
                 <strong>
                   {state.busy
                     ? (state.progress?.message ?? "Preparazione in corso")
-                    : selected?.job.stage === "ready"
-                      ? "La registrazione è pronta."
-                      : "Ripartiamo dal lavoro salvato."}
+                    : selected?.job.stage === "completed"
+                      ? "La dispensa è pronta."
+                      : selected?.job.stage === "ready"
+                        ? "La registrazione è pronta."
+                        : "Ripartiamo dal lavoro salvato."}
                 </strong>
                 <span>
                   {state.progress?.fraction === null
@@ -440,9 +484,11 @@ export default function StudioWorkspace({
                 dispositivo.{" "}
                 {state.busy
                   ? "Tieni questa pagina aperta: cambiando app la preparazione va in pausa."
-                  : selected?.job.stage === "ready"
-                    ? "La trascrizione sarà attivata nel prossimo aggiornamento."
-                    : "Per riprendere, seleziona la stessa registrazione."}
+                  : selected?.job.stage === "completed"
+                    ? "Appunti salvati. Puoi modificarli e scaricare il PDF."
+                    : selected?.job.stage === "ready"
+                      ? "Puoi avviare la trascrizione e creare la dispensa."
+                      : "Per riprendere, seleziona la stessa registrazione."}
               </p>
               {state.busy && (
                 <div className="job-actions">
@@ -475,6 +521,19 @@ export default function StudioWorkspace({
                 Scarica log diagnostico
               </button>
             </div>
+          )}
+          {selected && (
+            <ProcessingPanel
+              local={selected}
+              busy={state.busy}
+              csrfToken={csrfToken}
+              key={selected.job.id}
+              onProcess={(options) =>
+                void state.process(selected, csrfToken, options)
+              }
+              onSaved={state.refresh}
+              onError={(message) => state.setError(message)}
+            />
           )}
           {selected && !state.busy && (
             <div className="job-actions">
@@ -538,6 +597,10 @@ export default function StudioWorkspace({
                   ? `${Math.floor(hourlyQuota.remaining / 60)} min disponibili nella finestra oraria.`
                   : "Quota residua per tutte le lezioni."}
               </p>
+              <QuotaMeter
+                window={audioQuota}
+                label="Audio utilizzato nelle ultime 24 ore"
+              />
             </div>
             <div>
               <span>Appunti nelle ultime 24 ore</span>
@@ -547,6 +610,10 @@ export default function StudioWorkspace({
                   : "—"}
               </strong>
               <p>Il consumo dipende dalla lunghezza del testo.</p>
+              <QuotaMeter
+                window={tokenQuota}
+                label="Token utilizzati nelle ultime 24 ore"
+              />
             </div>
           </div>
           {quotaError && (
@@ -558,7 +625,7 @@ export default function StudioWorkspace({
             <p className="local-note">
               {!quotas.transcription.available || !quotas.notes.available
                 ? "Alcune elaborazioni non sono disponibili ora. Puoi comunque preparare l’audio localmente."
-                : "Le quote IA saranno utilizzate soltanto quando avvierai trascrizione e appunti."}
+                : "Quote condivise tra gli utenti su finestre mobili: si liberano progressivamente, senza reset a mezzanotte. La parte tratteggiata indica prenotazioni ancora conteggiate."}
             </p>
           )}
         </section>

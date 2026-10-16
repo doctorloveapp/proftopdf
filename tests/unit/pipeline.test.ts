@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { prepareAudio } from "../../src/lib/pipeline/prepare-audio";
 import { wavHeader } from "../../src/lib/audio/wav";
 import { exportAudioLog } from "../../src/lib/audio/diagnostics";
+import { emptyProcessing } from "../../src/lib/shared/processing";
 import {
   getChunk,
   listJobs,
@@ -182,5 +183,58 @@ test("Cancellation is persisted and a different source cannot replace a saved le
     () => prepareAudio(changed, ready, new AbortController().signal, () => {}),
     /non corrisponde/,
   );
+  await removeJob(local.job.id);
+});
+test("Requested PCM re-preparation cannot erase saved processing data when the original file hash differs", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const format = {
+    channels: 1,
+    sampleRate: 16000,
+    bits: 16,
+    blockAlign: 2,
+    byteRate: 32000,
+  };
+  const file = new File(
+    [wavHeader(format, 32000), new Uint8Array(32000)],
+    "source.wav",
+  );
+  const local = initial(file);
+  await saveJob(local);
+  const ready = await prepareAudio(
+    file,
+    local,
+    new AbortController().signal,
+    () => {},
+  );
+  ready.processing = emptyProcessing();
+  ready.processing.markdownDraft = "saved private draft";
+  await saveJob(ready);
+  const wrong = new File(
+    [wavHeader(format, 32000), new Uint8Array(32000).fill(1)],
+    "source.wav",
+  );
+  await assert.rejects(() =>
+    prepareAudio(
+      wrong,
+      ready,
+      new AbortController().signal,
+      () => {},
+      () => {},
+      true,
+    ),
+  );
+  const preserved = (await listJobs()).find((j) => j.job.id === local.job.id)!;
+  assert.equal(preserved.processing?.markdownDraft, "saved private draft");
+  const normalized = await prepareAudio(
+    file,
+    preserved,
+    new AbortController().signal,
+    () => {},
+    () => {},
+    true,
+  );
+  assert.equal(normalized.job.stage, "ready");
+  assert.equal(normalized.processing, undefined);
   await removeJob(local.job.id);
 });

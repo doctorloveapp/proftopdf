@@ -29,14 +29,23 @@ export async function cacheResult(
   owner: string,
   fingerprint: string,
   value: unknown,
+  jobId?: string,
 ) {
   const key = cacheKey(kind, operationId, owner, fingerprint);
   const payload = JSON.stringify({ owner, fingerprint, value });
   if (Buffer.byteLength(payload, "utf8") > 48_000) return false;
+  const cacheKeys = ["proftopdf:v1:cache:index", key];
+  if (jobId) {
+    if (!/^[a-f0-9-]{36}$/.test(jobId))
+      throw new Error("Identificativo job non valido.");
+    const index = `proftopdf:v1:cache:job:${owner}:${jobId}`;
+    cacheKeys.push(index, `${index}:deleted`);
+  }
   return (
     (await getRedis().eval(
       CACHE_RESULT_LUA,
-      ["proftopdf:v1:cache:index", key],
+      cacheKeys,
+      // A per-job index permits explicit deletion without scanning Redis.
       [payload],
     )) === 1
   );

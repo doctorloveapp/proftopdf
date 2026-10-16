@@ -18,7 +18,7 @@ export function routeError(error: unknown) {
       : new RouteError(
           503,
           "SERVICE_UNAVAILABLE",
-          "Servizio temporaneamente non disponibile. Nessuna elaborazione è stata avviata.",
+          "Servizio temporaneamente non disponibile. Il lavoro salvato resta disponibile; recupera il risultato prima di riprovare.",
         );
   const response = privateJson(
     {
@@ -26,7 +26,7 @@ export function routeError(error: unknown) {
       error: {
         code: known.code,
         message: known.message,
-        recoverable: known.status === 429 || known.status === 503,
+        recoverable: [409, 429, 502, 503, 504].includes(known.status),
         retryAt: known.retryAt,
       },
     },

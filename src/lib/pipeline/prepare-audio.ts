@@ -7,6 +7,7 @@ import { createAudioLog, type AudioLog } from "@/lib/audio/diagnostics";
 import { audioFailure } from "@/lib/audio/errors";
 import {
   acquireLease,
+  acquireStoredJob,
   renewLease,
   releaseLease,
   savePreparedChunk,
@@ -28,7 +29,13 @@ export function validateFile(file: File) {
     throw new Error("Scegli un file M4A, AAC, MP3, WAV, FLAC, Ogg o WebM.");
 }
 export interface PreparationProgress {
-  stage: "analyzing" | "preparing";
+  stage:
+    | "analyzing"
+    | "preparing"
+    | "transcribing"
+    | "generating-notes"
+    | "waiting-quota"
+    | "completed";
   fraction: number | null;
   message: string;
 }
@@ -39,6 +46,7 @@ export async function prepareAudio(
   signal: AbortSignal,
   notify: (local: LocalJob, progress: PreparationProgress) => void,
   log: AudioLog = createAudioLog(local.job.id),
+  forcePcm = false,
 ) {
   log("preparation.start", {
     bytes: file.size,
@@ -50,16 +58,16 @@ export async function prepareAudio(
     online: navigator.onLine ?? false,
   });
   let token: string;
+  let current: LocalJob;
   try {
     validateFile(file);
-    token = await acquireLease(local.job.id);
+    const stored=await acquireStoredJob(local.job.id);token=stored.token;current=structuredClone(stored.local);
   } catch (error) {
     log("preparation.rejected", { code: "AUDIO_FILE_OR_LEASE" }, "error");
     throw error;
   }
   log("lease.acquired");
   let phase = "fingerprint";
-  let current = structuredClone(local);
   const aborter = new AbortController();
   const timer = setInterval(() => {
     renewLease(local.job.id, token).catch(() => {
@@ -116,13 +124,26 @@ export async function prepareAudio(
       throw new Error(
         "Questo file non corrisponde alla lezione salvata. Seleziona la registrazione originale.",
       );
+    if (forcePcm) {
+      // Only invalidate derived data after confirming the original file hash.
+      // A mistakenly selected file must not erase already saved text.
+      current.manifest.chunks = [];
+      current.preparedChunkIds = [];
+      current.job.completedChunkIds = [];
+      current.job.completedNotesUnitIds = [];
+      current.processing = undefined;
+      log("format.normalize-requested", { output: "pcm_s16le" });
+    }
     phase = "format";
     const wav = await inspectWav(file);
     let duration: number;
     if (wav) {
       duration = wav.duration;
       log("format.selected", { engine: "wav-js", durationSeconds: duration });
-    } else if (/\.mp3$/i.test(file.name) || file.type === "audio/mpeg") {
+    } else if (
+      !forcePcm &&
+      (/\.mp3$/i.test(file.name) || file.type === "audio/mpeg")
+    ) {
       phase = "mp3-scan";
       log("format.selected", { engine: "mp3-js" });
       worker = await openMp3(
@@ -146,7 +167,7 @@ export async function prepareAudio(
         message: "Caricamento del motore audio, solo al primo utilizzo",
       });
       const { openAudioWorker } = await import("@/lib/audio/ffmpeg");
-      worker = await openAudioWorker(file, combined, log);
+      worker = await openAudioWorker(file, combined, log, forcePcm);
       duration = worker.duration;
     }
     if (duration > AUDIO_LIMITS.maxDurationSeconds)

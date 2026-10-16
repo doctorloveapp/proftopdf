@@ -1,5 +1,6 @@
 export const APP_NAME = "ProfToPdf";
 export const PRODUCTION_ORIGIN = "https://proftopdf.velodent.eu";
+export const GROQ_API_ORIGIN = "https://api.groq.com";
 
 export const AUDIO_LIMITS = {
   maxFileBytes: 120_000_000,

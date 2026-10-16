@@ -23,6 +23,7 @@ for (const required of [
   "tmp/",
   "docs/",
   "public/ffmpeg/",
+  "public/pdf/",
 ]) {
   if (!rules.includes(required))
     failures.push(`Regola di esclusione mancante: ${required}`);

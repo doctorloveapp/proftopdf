@@ -8,6 +8,7 @@ export async function openAudioWorker(
   file: File,
   signal: AbortSignal,
   log: AudioLog = () => {},
+  forcePcm = false,
 ) {
   // Load the official unmodified wrapper as a same-origin ESM asset. Its
   // dynamic Worker URL cannot be statically resolved by Turbopack.
@@ -204,12 +205,13 @@ export async function openAudioWorker(
     const source = await probe("/input/source");
     return {
       duration: source.duration,
-      estimatedBytes: ["aac", "mp3", "flac"].includes(source.codec)
-        ? Math.ceil(file.size * 1.05)
-        : Math.ceil(source.duration * 32_000 * 1.05),
+      estimatedBytes:
+        !forcePcm && ["aac", "mp3"].includes(source.codec)
+          ? Math.ceil(file.size * 1.05)
+          : Math.ceil(source.duration * 32_000 * 1.05),
       async chunk(start: number) {
         abortIfNeeded(signal);
-        const copy = ["aac", "mp3", "flac"].includes(source.codec);
+        const copy = !forcePcm && ["aac", "mp3"].includes(source.codec);
         const extension =
           source.codec === "aac"
             ? "m4a"

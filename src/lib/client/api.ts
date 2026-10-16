@@ -8,6 +8,7 @@ export class ClientApiError extends Error {
     message: string,
     public status: number,
     public retryAt: string | null = null,
+    public code = "REQUEST_FAILED",
   ) {
     super(message);
   }
@@ -27,6 +28,7 @@ export async function api<T>(
       result?.error?.message ?? "Connessione non disponibile. Riprova.",
       response.status,
       result?.error?.retryAt ?? null,
+      result?.error?.code ?? "REQUEST_FAILED",
     );
   return result.data as T;
 }
