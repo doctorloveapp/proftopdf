@@ -5,6 +5,14 @@ import type {
   ProcessingJob,
 } from "@/lib/shared/types";
 import type { ProcessingData } from "@/lib/shared/processing";
+import type { TimingSummary } from "@/lib/audio/timing";
+
+export interface PdfExport {
+  createdAt: string;
+  documentUpdatedAt: string;
+  byteLength: number;
+  timingSummary: TimingSummary | null;
+}
 
 export interface LocalJob {
   job: ProcessingJob;
@@ -13,6 +21,8 @@ export interface LocalJob {
   manifest: AudioManifest;
   preparedChunkIds: string[];
   processing?: ProcessingData;
+  pdfExport?: PdfExport;
+  pdfGenerationTracked?: true;
 }
 interface CachedChunk {
   key: string;
@@ -72,6 +82,33 @@ export async function saveJobWithLease(local: LocalJob, token: string) {
 }
 export async function getChunk(jobId: string, index: number) {
   return (await db()).get("chunks", chunkKey(jobId, index));
+}
+/** Merge just the PDF receipt into the latest job; never overwrite saved text. */
+export async function savePdfExport(
+  jobId: string,
+  receipt: PdfExport,
+  token: string,
+) {
+  const tx = (await db()).transaction(["jobs", "leases"], "readwrite");
+  const local = await tx.objectStore("jobs").get(jobId);
+  const lease = await tx.objectStore("leases").get(jobId);
+  if (
+    !local ||
+    !lease ||
+    lease.token !== token ||
+    lease.expiresAt <= Date.now() ||
+    local.processing?.document?.updatedAt !== receipt.documentUpdatedAt
+  ) {
+    tx.abort();
+    await tx.done.catch(() => {});
+    throw new Error(
+      "La lezione è stata eliminata o modificata in un’altra scheda. Riaprila per creare il PDF aggiornato.",
+    );
+  }
+  local.pdfExport = receipt;
+  local.pdfGenerationTracked = true;
+  await tx.objectStore("jobs").put(local);
+  await tx.done;
 }
 export async function acquireLease(jobId: string) {
   const transaction = (await db()).transaction("leases", "readwrite");

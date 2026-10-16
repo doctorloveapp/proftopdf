@@ -1,6 +1,15 @@
 import type { AudioDetails } from "./errors";
+import {
+  emptyTiming,
+  recoverTiming,
+  recordTiming,
+  timingSummary,
+  timingFromSummary,
+  type TimingState,
+  type TimingSummary,
+} from "./timing";
 
-export const AUDIO_REVISION = "mobile-languages-2026-10-16-v2";
+export const AUDIO_REVISION = "library-timing-2026-10-17-v3";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;
@@ -21,6 +30,7 @@ interface DiagnosticReport {
   environment: AudioDetails;
   events: DiagnosticEvent[];
   droppedEvents: number;
+  timingState?: TimingState;
 }
 let memory: DiagnosticReport[] = [];
 function reports(): DiagnosticReport[] {
@@ -66,10 +76,13 @@ export type AudioLog = (
   details?: AudioDetails,
   level?: "info" | "error",
 ) => void;
-export function createAudioLog(jobId: string): AudioLog {
+export function createAudioLog(
+  jobId: string,
+  priorTiming?: TimingSummary,
+): AudioLog {
   const started = performance.now();
   const attemptId = crypto.randomUUID();
-  const report: DiagnosticReport = reports().find((r) => r.jobId === jobId) ?? {
+  let report: DiagnosticReport = reports().find((r) => r.jobId === jobId) ?? {
     schema: "proftopdf/audio-log/v1",
     revision: AUDIO_REVISION,
     jobId,
@@ -77,6 +90,7 @@ export function createAudioLog(jobId: string): AudioLog {
     persistent: false,
     droppedEvents: 0,
     events: [],
+    timingState: priorTiming ? timingFromSummary(priorTiming) : emptyTiming(),
     environment: {
       userAgent:
         typeof navigator === "undefined"
@@ -92,6 +106,11 @@ export function createAudioLog(jobId: string): AudioLog {
   };
   report.revision = AUDIO_REVISION;
   return (event, details = {}, level = "info") => {
+    // Another logger for this job may have written since this callback was
+    // created (for example the PDF logger after a processing attempt).
+    report = reports().find((r) => r.jobId === jobId) ?? report;
+    report.revision = AUDIO_REVISION;
+    report.timingState ??= recoverTiming(report.events, report.droppedEvents);
     // Callers supply technical data only: never file names, metadata, audio,
     // fingerprints, passwords, tokens, cookie values, or HTTP bodies.
     const bounded = Object.fromEntries(
@@ -108,6 +127,7 @@ export function createAudioLog(jobId: string): AudioLog {
       details: bounded,
     };
     report.updatedAt = entry.at;
+    recordTiming(report.timingState, entry);
     report.events.push(entry);
     if (report.events.length > MAX_EVENTS) {
       report.events.shift();
@@ -127,10 +147,34 @@ export function exportAudioLog(jobId: string) {
     throw new Error(
       "Nessun log disponibile per questa lezione. Avvia o riprendi la preparazione per registrare la diagnostica.",
     );
+  const { timingState: state, ...publicReport } = report;
   return JSON.stringify(
-    { ...report, exportedAt: new Date().toISOString() },
+    {
+      ...publicReport,
+      exportedAt: new Date().toISOString(),
+      timingSummary: timingSummary(
+        state ?? recoverTiming(report.events, report.droppedEvents),
+      ),
+    },
     null,
     2,
+  );
+}
+export function readAudioTiming(jobId: string) {
+  const report = reports().find((r) => r.jobId === jobId);
+  return report
+    ? timingSummary(
+        report.timingState ??
+          recoverTiming(report.events, report.droppedEvents),
+      )
+    : null;
+}
+export function hasGeneratedPdf(jobId: string) {
+  const report = reports().find((r) => r.jobId === jobId);
+  return Boolean(
+    report &&
+    (report.timingState?.phases.pdf.completed ||
+      report.events.some((event) => event.event === "pdf.complete")),
   );
 }
 export function removeAudioLog(jobId: string) {

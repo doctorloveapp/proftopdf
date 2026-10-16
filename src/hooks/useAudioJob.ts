@@ -40,23 +40,19 @@ export function useAudioJob() {
         ...old.filter((entry) => entry.job.id !== local.job.id),
       ]);
   }, []);
-  const refresh = useCallback(async (chooseFirst = false) => {
+  const refresh = useCallback(async () => {
     const version = ++refreshVersion.current;
     const restored = await Promise.all((await listJobs()).map(reconcileJob));
     if (mounted.current && refreshVersion.current === version) {
       setJobs(restored);
       setSelectedId((id) =>
-        restored.some((entry) => entry.job.id === id)
-          ? id
-          : chooseFirst
-            ? (restored[0]?.job.id ?? null)
-            : null,
+        restored.some((entry) => entry.job.id === id) ? id : null,
       );
     }
   }, []);
   useEffect(() => {
     mounted.current = true;
-    refresh(true).catch(() =>
+    refresh().catch(() =>
       setError(
         "Archivio locale non disponibile. Verifica lo spazio e le impostazioni del browser.",
       ),
@@ -94,6 +90,7 @@ export function useAudioJob() {
       const local: LocalJob = existing ?? {
         title: (title.trim() || "Nuova lezione").slice(0, 200),
         subject: subject.trim(),
+        pdfGenerationTracked: true,
         preparedChunkIds: [],
         manifest: {
           version: 1,

@@ -11,10 +11,12 @@ import {
   getChunk,
   reconcileJob,
   listJobs,
+  savePdfExport,
   saveJobWithLease,
   acquireStoredJob,
 } from "../../src/lib/storage/jobs";
 import { importCheckpoint } from "../../src/lib/storage/checkpoint";
+import { emptyProcessing } from "../../src/lib/shared/processing";
 
 function fixture() {
   return importCheckpoint(
@@ -47,6 +49,54 @@ function fixture() {
     }),
   );
 }
+test("PDF generation history survives a stored-job reload, merges metadata and cannot resurrect a deleted lesson", async () => {
+  const local = fixture();
+  local.processing = emptyProcessing();
+  const now = new Date().toISOString();
+  local.processing.document = {
+    version: 1,
+    jobId: local.job.id,
+    title: local.title,
+    subject: "",
+    language: "it",
+    createdAt: now,
+    updatedAt: now,
+    sections: [],
+    glossary: [],
+    gaps: [],
+    complete: true,
+  };
+  local.processing.markdownDraft = "Retain this draft";
+  await saveJob(local);
+  const stored = await acquireStoredJob(local.job.id);
+  const receipt = {
+    createdAt: now,
+    documentUpdatedAt: now,
+    byteLength: 1000,
+    timingSummary: null,
+  };
+  await savePdfExport(local.job.id, receipt, stored.token);
+  await releaseLease(local.job.id, stored.token);
+  const reloaded = await acquireStoredJob(local.job.id);
+  assert.deepEqual(reloaded.local.pdfExport, receipt);
+  assert.equal(reloaded.local.pdfGenerationTracked, true);
+  assert.equal(reloaded.local.processing?.markdownDraft, "Retain this draft");
+  await assert.rejects(() =>
+    savePdfExport(
+      local.job.id,
+      { ...receipt, documentUpdatedAt: "stale" },
+      reloaded.token,
+    ),
+  );
+  await removeJob(local.job.id, { interrupt: true });
+  await assert.rejects(() =>
+    savePdfExport(local.job.id, receipt, reloaded.token),
+  );
+  assert.equal(
+    (await listJobs()).some((entry) => entry.job.id === local.job.id),
+    false,
+  );
+});
 test("Leases serialize tabs and prevent stale writes or deletion of an active job", async () => {
   const local = fixture();
   await saveJob(local);

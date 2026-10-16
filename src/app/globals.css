@@ -822,8 +822,58 @@ input:focus-visible {
   margin-top: 20px;
 }
 .install-app {
-  margin-top: 12px;
+  margin-top: 18px;
   text-align: right;
+}
+.install-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 18px;
+  min-height: 68px;
+  max-width: 100%;
+  border: 1px solid #176888;
+  border-radius: 12px;
+  background: linear-gradient(125deg, #176888, #247fa5);
+  box-shadow: 0 5px 16px rgb(23 104 136 / 15%);
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+.install-button:hover {
+  background: #176888;
+}
+.install-button:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 4px;
+}
+.install-button:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+.install-button strong {
+  display: block;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+.install-button small {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.72rem;
+  color: #e5f5fb;
+}
+.install-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  background: rgb(255 255 255 / 13%);
+}
+.install-arrow {
+  margin-left: auto;
+  font-size: 1.2rem;
 }
 .install-instructions {
   margin: 10px 0 0 auto;
@@ -849,6 +899,19 @@ input:focus-visible {
 #pdf-progress,
 #pdf-download {
   scroll-margin-top: 24px;
+}
+#lesson-workspace {
+  scroll-margin-top: 24px;
+}
+.back-to-library {
+  margin-bottom: 18px;
+}
+.pdf-completion {
+  width: 100%;
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #27634c;
 }
 @media (prefers-reduced-motion: reduce) {
   html {
@@ -879,6 +942,20 @@ input:focus-visible {
   align-items: start;
   gap: 25px;
 }
+.studio-grid.is-library {
+  display: flex;
+  flex-direction: column;
+}
+.studio-grid.is-library > * {
+  width: 100%;
+}
+.is-library .lesson-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+.upload-panel {
+  grid-column: 2;
+  grid-row: 1;
+}
 .lessons-panel,
 .upload-panel,
 .quota-panel {
@@ -898,6 +975,7 @@ input:focus-visible {
   gap: 15px;
   margin-bottom: 22px;
 }
+.panel-heading h1,
 .panel-heading h2 {
   font-size: 1.05rem;
   font-weight: 600;
@@ -1134,6 +1212,7 @@ input:focus-visible {
 }
 .quota-panel {
   grid-column: 2;
+  grid-row: 2;
   padding: 20px 25px;
 }
 .quota-panel .panel-heading {
@@ -1227,11 +1306,11 @@ input:focus-visible {
     width: 100%;
   }
   .upload-panel {
-    order: 0;
+    order: 2;
     padding: 20px 17px;
   }
   .lessons-panel {
-    order: 2;
+    order: 0;
   }
   .quota-panel {
     order: 1;
@@ -1257,5 +1336,8 @@ input:focus-visible {
   }
   .lesson-list {
     max-height: 260px;
+  }
+  .install-button {
+    width: 100%;
   }
 }

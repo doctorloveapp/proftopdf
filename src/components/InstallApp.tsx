@@ -47,14 +47,36 @@ export default function InstallApp() {
   return (
     <div className="install-app">
       <button
-        className="text-button"
+        className="install-button"
         type="button"
         disabled={prompting}
         aria-expanded={instructions}
         aria-controls="install-instructions"
         onClick={() => void install()}
       >
-        {prompting ? "Apertura installazione…" : "Installa ProfToPdf"}
+        <span className="install-icon" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="24"
+            height="24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 3v11m-4-4 4 4 4-4M5 16v4h14v-4" />
+          </svg>
+        </span>
+        <span>
+          <strong>
+            {prompting ? "Apertura installazione…" : "Installa ProfToPdf"}
+          </strong>
+          <small>Le tue lezioni, a portata di mano</small>
+        </span>
+        <span className="install-arrow" aria-hidden="true">
+          →
+        </span>
       </button>
       {instructions && (
         <div

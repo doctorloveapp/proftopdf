@@ -3,7 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   acquireLease,
+  acquireStoredJob,
+  renewLease,
   releaseLease,
+  savePdfExport,
   saveMarkdownDraft,
   type LocalJob,
 } from "@/lib/storage/jobs";
@@ -13,7 +16,13 @@ import {
   transcriptText,
   timestamp,
 } from "@/lib/transcription/merge";
-import { createAudioLog } from "@/lib/audio/diagnostics";
+import {
+  createAudioLog,
+  hasGeneratedPdf,
+  readAudioTiming,
+  type AudioLog,
+} from "@/lib/audio/diagnostics";
+import { formatTiming, type TimingSummary } from "@/lib/audio/timing";
 import type { ProcessingOptions } from "@/lib/pipeline/process-lecture";
 import { documentFileStem } from "@/lib/pdf/naming";
 import { scrollToControl } from "@/lib/client/scroll";
@@ -46,6 +55,9 @@ export default function ProcessingPanel({
     [saving, setSaving] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false),
     [pdfUrl, setPdfUrl] = useState("");
+  const [completedTiming, setCompletedTiming] = useState<TimingSummary | null>(
+    local.pdfExport?.timingSummary ?? null,
+  );
   const pdfController = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   const data = local.processing,
@@ -121,19 +133,70 @@ export default function ProcessingPanel({
     }
   }
   async function preparePdf() {
-    if (!lecture || pdfBusy) return;
+    if (!lecture || pdfBusy || pdfController.current) return;
     setPdfBusy(true);
-    scrollToControl("pdf-progress", true);
     const controller = new AbortController();
     pdfController.current = controller;
-    const log = createAudioLog(local.job.id);
-    log("pdf.start", { sections: lecture.sections.length });
+    let token: string | undefined,
+      heartbeat: ReturnType<typeof setInterval> | undefined,
+      log: AudioLog | undefined;
     try {
+      const stored = await acquireStoredJob(local.job.id);
+      token = stored.token;
+      if (!mounted.current || controller.signal.aborted) return;
+      if (stored.local.processing?.document?.updatedAt !== lecture.updatedAt)
+        throw new Error(
+          "Gli appunti sono cambiati. Riapri la lezione prima di preparare il PDF.",
+        );
+      const alreadyGenerated =
+        stored.local.pdfExport || hasGeneratedPdf(local.job.id);
+      if (
+        (alreadyGenerated || !stored.local.pdfGenerationTracked) &&
+        !window.confirm(
+          alreadyGenerated
+            ? "Il PDF di questa lezione è già stato creato. Vuoi ricrearlo?"
+            : "Questa lezione proviene da una versione precedente e non ha uno storico PDF completo. Il PDF potrebbe essere già stato creato. Vuoi generarlo o ricrearlo?",
+        )
+      )
+        return;
+      await renewLease(local.job.id, token);
+      heartbeat = setInterval(() => {
+        void renewLease(local.job.id, token!).catch(() =>
+          controller.abort("lease-lost"),
+        );
+      }, 5000);
+      scrollToControl("pdf-progress", true);
+      log = createAudioLog(
+        local.job.id,
+        stored.local.pdfExport?.timingSummary ?? undefined,
+      );
+      log("pdf.start", { sections: lecture.sections.length });
       const { createPdf } = await import("@/lib/pdf/client");
       const blob = await createPdf(lecture, markdown, controller.signal);
-      if (!mounted.current) return;
-      setPdfUrl(URL.createObjectURL(blob));
+      if (!mounted.current || controller.signal.aborted) return;
       log("pdf.complete", { bytes: blob.size });
+      const summary = readAudioTiming(local.job.id);
+      setCompletedTiming(summary);
+      try {
+        await savePdfExport(
+          local.job.id,
+          {
+            createdAt: new Date().toISOString(),
+            documentUpdatedAt: lecture.updatedAt,
+            byteLength: blob.size,
+            timingSummary: summary,
+          },
+          token,
+        );
+        await onSaved();
+      } catch {
+        log("pdf.history.failed", { code: "PDF_HISTORY_STORAGE" }, "error");
+        onError(
+          "Il PDF è pronto, ma lo storico locale non è stato salvato. Scaricalo e conserva l’originale.",
+        );
+      }
+      if (mounted.current && !controller.signal.aborted)
+        setPdfUrl(URL.createObjectURL(blob));
     } catch (error) {
       if (!mounted.current) return;
       if (!controller.signal.aborted) {
@@ -147,7 +210,7 @@ export default function ProcessingPanel({
                   }
                 | undefined)
             : undefined;
-        log(
+        log?.(
           "pdf.failed",
           {
             code: cause?.code ?? "PDF_RENDER_FAILED",
@@ -159,8 +222,16 @@ export default function ProcessingPanel({
         onError(
           error instanceof Error ? error.message : "PDF non disponibile.",
         );
-      } else log("pdf.cancelled");
+      } else {
+        log?.("pdf.cancelled");
+        if (controller.signal.reason === "lease-lost")
+          onError(
+            "La lezione è stata eliminata o aperta per l’elaborazione in un’altra scheda. Riaprila per continuare.",
+          );
+      }
     } finally {
+      clearInterval(heartbeat);
+      if (token) await releaseLease(local.job.id, token).catch(() => {});
       if (mounted.current) setPdfBusy(false);
       pdfController.current = null;
     }
@@ -335,6 +406,19 @@ export default function ProcessingPanel({
           )}
           {pdfUrl && (
             <div className="pdf-actions">
+              {completedTiming && (
+                <p
+                  className="pdf-completion"
+                  role="status"
+                  title="Somma delle fasi e dei tentativi registrati, incluse le attese quota durante l’elaborazione; esclusi gli intervalli tra le fasi e le pause."
+                >
+                  {completedTiming.completo
+                    ? "Completato in"
+                    : "Tempo registrato"}{" "}
+                  {formatTiming(completedTiming.tempoTotaleSecondi, true)}
+                  {!completedTiming.completo && " (riepilogo parziale)"}
+                </p>
+              )}
               <a
                 id="pdf-download"
                 className="button"

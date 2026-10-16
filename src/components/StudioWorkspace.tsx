@@ -37,6 +37,7 @@ export default function StudioWorkspace({
   csrfToken: string;
 }) {
   const state = useAudioJob();
+  const [editorOpen, setEditorOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState(""),
     [subject, setSubject] = useState("");
@@ -101,9 +102,11 @@ export default function StudioWorkspace({
   function newLesson() {
     if (state.busy || storageBusy) return;
     resetLesson();
+    setEditorOpen(true);
     scrollToControl("audio-picker-button", true);
   }
   function resetLesson() {
+    setEditorOpen(false);
     state.setSelectedId(null);
     setFile(null);
     setTitle("");
@@ -114,9 +117,11 @@ export default function StudioWorkspace({
   function selectLesson(local: LocalJob) {
     if (state.busy) return;
     state.setSelectedId(local.job.id);
+    setEditorOpen(true);
     setFile(null);
     setNotice("");
     state.setError("");
+    scrollToControl("lesson-workspace", true);
   }
   async function deleteSelected() {
     if (!selected || storageBusy) return;
@@ -236,37 +241,50 @@ export default function StudioWorkspace({
     (selected?.manifest.source.durationSeconds
       ? selectedEnd / selected.manifest.source.durationSeconds
       : 0);
+  const LibraryHeading = editorOpen ? "h2" : "h1";
 
   return (
     <main className="studio-main" id="contenuto">
-      <div className="studio-intro">
-        <div>
-          <p className="eyebrow">IL TUO SPAZIO DI STUDIO</p>
-          <h1>
-            Una lezione.
+      {editorOpen && (
+        <div className="studio-intro">
+          <div>
+            <p className="eyebrow">IL TUO SPAZIO DI STUDIO</p>
+            <h1>
+              Una lezione.
+              <br />
+              <span>Un nuovo punto di partenza.</span>
+            </h1>
+          </div>
+          <p>
+            Prepara la registrazione sul tuo dispositivo.
             <br />
-            <span>Un nuovo punto di partenza.</span>
-          </h1>
+            Ritroverai qui il lavoro già salvato.
+          </p>
         </div>
-        <p>
-          Prepara la registrazione sul tuo dispositivo.
-          <br />
-          Ritroverai qui il lavoro già salvato.
-        </p>
-      </div>
-      <div className="studio-grid">
+      )}
+      <div className={`studio-grid${editorOpen ? "" : " is-library"}`}>
         <aside className="lessons-panel" aria-label="Lezioni salvate">
           <div className="panel-heading">
-            <h2>Le tue lezioni</h2>
+            <LibraryHeading>Le tue lezioni</LibraryHeading>
             <span>{state.jobs.length}</span>
           </div>
           <button
             className="button button-secondary full-width"
             onClick={newLesson}
-            disabled={state.busy}
+            disabled={state.busy || storageBusy}
           >
             + Nuova lezione
           </button>
+          {!editorOpen && state.error && (
+            <div className="feedback feedback-error" role="alert">
+              {state.error}
+            </div>
+          )}
+          {!editorOpen && notice && (
+            <div className="feedback" role="status">
+              {notice}
+            </div>
+          )}
           <div className="lesson-list">
             {state.jobs.length === 0 ? (
               <p className="empty-list">
@@ -314,272 +332,9 @@ export default function StudioWorkspace({
             serve l’originale; non contiene audio, appunti o PDF.
           </p>
         </aside>
-        <section className="upload-panel" aria-labelledby="upload-title">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">
-                {selected ? "LA TUA REGISTRAZIONE" : "COMINCIAMO DALL’AUDIO"}
-              </p>
-              <h2 id="upload-title">
-                {selected?.title ?? "Aggiungi una lezione"}
-              </h2>
-            </div>
-            {selected && (
-              <span
-                className={`status-badge ${["ready", "completed"].includes(selected.job.stage) ? "is-ready" : ""}`}
-              >
-                {labels[selected.job.stage] ?? selected.job.stage}
-              </span>
-            )}
-          </div>
-          {selected && (
-            <div className="file-summary">
-              <span aria-hidden="true">♫</span>
-              <div>
-                <strong>{selected.manifest.source.name}</strong>
-                <p>
-                  {size(selected.manifest.source.byteLength)}
-                  {selected.manifest.source.durationSeconds > 0 &&
-                    ` · ${minutes(selected.manifest.source.durationSeconds)}`}{" "}
-                  · {selected.subject || "Lezione universitaria"}
-                </p>
-              </div>
-            </div>
-          )}
-          {(!selected ||
-            (selected.job.stage !== "ready" &&
-              !selected.processing &&
-              !state.busy) ||
-            (!state.busy &&
-              ["LOCAL_AUDIO_MISSING", "AUDIO_NORMALIZATION_REQUIRED"].includes(
-                selected.job.error?.code ?? "",
-              ))) && (
-            <>
-              <div
-                className={`drop-zone ${dragging ? "is-dragging" : ""}`}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  if (!state.busy) setDragging(true);
-                }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setDragging(false);
-                  if (event.dataTransfer.files.length > 1)
-                    state.setError("Seleziona una registrazione alla volta.");
-                  else chooseFile(event.dataTransfer.files[0]);
-                }}
-              >
-                <span className="upload-symbol" aria-hidden="true">
-                  ↑
-                </span>
-                <h3>
-                  {file
-                    ? file.name
-                    : selected
-                      ? "Ritrova il file originale"
-                      : "La registrazione è qui che inizia."}
-                </h3>
-                <p>
-                  {file
-                    ? `${size(file.size)} · pronto per la verifica`
-                    : "Scegli un audio dal dispositivo, oppure trascinalo qui."}
-                </p>
-                <button
-                  id="audio-picker-button"
-                  className="button"
-                  type="button"
-                  onClick={() => {
-                    if (picker.current) picker.current.value = "";
-                    picker.current?.click();
-                  }}
-                  disabled={state.busy}
-                >
-                  {file ? "Cambia file" : "Scegli la registrazione"}
-                </button>
-                <span className="format-note">
-                  M4A, AAC, MP3, WAV, FLAC, Ogg, WebM · fino a 120 MB / 120 min
-                </span>
-                <input
-                  ref={picker}
-                  type="file"
-                  accept={AUDIO_ACCEPT}
-                  hidden
-                  onChange={(event) => chooseFile(event.target.files?.[0])}
-                />
-              </div>
-              {!selected && (
-                <div className="lesson-fields">
-                  <label>
-                    Titolo della lezione
-                    <input
-                      value={title}
-                      onChange={(event) => setTitle(event.target.value)}
-                      maxLength={200}
-                      placeholder="Es. Introduzione alla psicologia"
-                    />
-                  </label>
-                  <label>
-                    Materia <span>(facoltativa)</span>
-                    <input
-                      value={subject}
-                      onChange={(event) => setSubject(event.target.value)}
-                      maxLength={200}
-                      list="lesson-subjects"
-                      placeholder="Scegli o scrivi una materia"
-                    />
-                    <datalist id="lesson-subjects">
-                      {SUBJECTS.map((entry) => (
-                        <option key={entry} value={entry} />
-                      ))}
-                    </datalist>
-                  </label>
-                </div>
-              )}
-              <p className="local-note">
-                La preparazione avviene sul dispositivo. Avviando la
-                trascrizione, i segmenti saranno inviati a Groq tramite
-                ProfToPdf. Le lingue parlate vengono conservate senza traduzione
-                automatica.
-              </p>
-              <button
-                className="button prepare-button"
-                disabled={!file || state.busy || storageBusy}
-                onClick={() => {
-                  if (file) {
-                    void state.start(file, title, subject, selected);
-                    scrollToControl("lecture-progress", true);
-                  }
-                }}
-              >
-                {selected?.job.error?.code === "AUDIO_NORMALIZATION_REQUIRED"
-                  ? "Prepara versione WAV compatibile"
-                  : selected
-                    ? "Riprendi la preparazione"
-                    : "Prepara la lezione"}{" "}
-                <span aria-hidden="true">→</span>
-              </button>
-            </>
-          )}
-          {state.busy ||
-          selected?.preparedChunkIds.length ||
-          selected?.job.stage === "ready" ? (
-            <div
-              id="lecture-progress"
-              tabIndex={-1}
-              className="progress-card"
-              aria-live="polite"
-            >
-              <div className="progress-heading">
-                <strong>
-                  {state.busy
-                    ? (state.progress?.message ?? "Preparazione in corso")
-                    : selected?.job.stage === "completed"
-                      ? "La dispensa è pronta."
-                      : selected?.job.stage === "ready"
-                        ? "La registrazione è pronta."
-                        : "Ripartiamo dal lavoro salvato."}
-                </strong>
-                <span>
-                  {state.progress?.fraction === null
-                    ? "In corso"
-                    : `${Math.floor(fraction * 100)}%`}
-                </span>
-              </div>
-              {state.progress?.fraction === null ? (
-                <progress aria-label="Analisi del formato audio" />
-              ) : (
-                <progress
-                  max={1}
-                  value={fraction}
-                  aria-label={
-                    state.progress?.stage === "analyzing"
-                      ? "Verifica del file"
-                      : "Preparazione audio"
-                  }
-                />
-              )}
-              <p>
-                {selected?.preparedChunkIds.length ?? 0} segmenti salvati sul
-                dispositivo.{" "}
-                {state.busy
-                  ? "Tieni questa pagina aperta: cambiando app la preparazione va in pausa."
-                  : selected?.job.stage === "completed"
-                    ? "Appunti salvati. Puoi modificarli e scaricare il PDF."
-                    : selected?.job.stage === "ready"
-                      ? "Puoi avviare la trascrizione e creare la dispensa."
-                      : "Per riprendere, seleziona la stessa registrazione."}
-              </p>
-              {state.busy && (
-                <div className="job-actions">
-                  <button
-                    className="button button-secondary"
-                    onClick={state.pause}
-                  >
-                    Metti in pausa
-                  </button>
-                  <button className="text-button danger" onClick={state.cancel}>
-                    Annulla elaborazione
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : null}
-          {(state.error || selected?.job.error?.message) && (
-            <div className="feedback feedback-error" role="alert">
-              {state.error || selected?.job.error?.message}
-            </div>
-          )}
-          {notice && (
-            <div className="feedback" role="status">
-              {notice}
-            </div>
-          )}
-          {selected && (
-            <div className="job-actions">
-              <button className="text-button" onClick={downloadDiagnostics}>
-                Scarica log diagnostico
-              </button>
-            </div>
-          )}
-          {selected && (
-            <ProcessingPanel
-              local={selected}
-              busy={state.busy || storageBusy}
-              csrfToken={csrfToken}
-              key={selected.job.id}
-              onProcess={(options) => {
-                void state.process(selected, csrfToken, options);
-                scrollToControl("lecture-progress", true);
-              }}
-              onSaved={state.refresh}
-              onError={(message) => state.setError(message)}
-            />
-          )}
-          {selected && (
-            <div className="job-actions">
-              <button
-                className="text-button"
-                disabled={
-                  state.busy || !selected.manifest.source.sha256 || storageBusy
-                }
-                onClick={downloadCheckpoint}
-              >
-                Esporta checkpoint
-              </button>
-              <button
-                className="text-button danger"
-                disabled={storageBusy}
-                onClick={() => void deleteSelected()}
-              >
-                {storageBusy ? "Eliminazione…" : "Elimina lezione"}
-              </button>
-            </div>
-          )}
-        </section>
         <section className="quota-panel" aria-labelledby="quota-title">
           <div className="panel-heading">
-            <h2 id="quota-title">Disponibilità condivisa</h2>
+            <h2 id="quota-title">Disponibilità residua</h2>
             <button
               className="text-button"
               disabled={loadingQuota}
@@ -633,6 +388,290 @@ export default function StudioWorkspace({
             </p>
           )}
         </section>
+        {editorOpen && (
+          <section
+            id="lesson-workspace"
+            tabIndex={-1}
+            className="upload-panel"
+            aria-labelledby="upload-title"
+          >
+            <button
+              className="text-button back-to-library"
+              disabled={state.busy || storageBusy}
+              onClick={resetLesson}
+            >
+              ← Le tue lezioni
+            </button>
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">
+                  {selected ? "LA TUA REGISTRAZIONE" : "COMINCIAMO DALL’AUDIO"}
+                </p>
+                <h2 id="upload-title">
+                  {selected?.title ?? "Aggiungi una lezione"}
+                </h2>
+              </div>
+              {selected && (
+                <span
+                  className={`status-badge ${["ready", "completed"].includes(selected.job.stage) ? "is-ready" : ""}`}
+                >
+                  {labels[selected.job.stage] ?? selected.job.stage}
+                </span>
+              )}
+            </div>
+            {selected && (
+              <div className="file-summary">
+                <span aria-hidden="true">♫</span>
+                <div>
+                  <strong>{selected.manifest.source.name}</strong>
+                  <p>
+                    {size(selected.manifest.source.byteLength)}
+                    {selected.manifest.source.durationSeconds > 0 &&
+                      ` · ${minutes(selected.manifest.source.durationSeconds)}`}{" "}
+                    · {selected.subject || "Lezione universitaria"}
+                  </p>
+                </div>
+              </div>
+            )}
+            {(!selected ||
+              (selected.job.stage !== "ready" &&
+                !selected.processing &&
+                !state.busy) ||
+              (!state.busy &&
+                [
+                  "LOCAL_AUDIO_MISSING",
+                  "AUDIO_NORMALIZATION_REQUIRED",
+                ].includes(selected.job.error?.code ?? ""))) && (
+              <>
+                <div
+                  className={`drop-zone ${dragging ? "is-dragging" : ""}`}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    if (!state.busy) setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragging(false);
+                    if (event.dataTransfer.files.length > 1)
+                      state.setError("Seleziona una registrazione alla volta.");
+                    else chooseFile(event.dataTransfer.files[0]);
+                  }}
+                >
+                  <span className="upload-symbol" aria-hidden="true">
+                    ↑
+                  </span>
+                  <h3>
+                    {file
+                      ? file.name
+                      : selected
+                        ? "Ritrova il file originale"
+                        : "La registrazione è qui che inizia."}
+                  </h3>
+                  <p>
+                    {file
+                      ? `${size(file.size)} · pronto per la verifica`
+                      : "Scegli un audio dal dispositivo, oppure trascinalo qui."}
+                  </p>
+                  <button
+                    id="audio-picker-button"
+                    className="button"
+                    type="button"
+                    onClick={() => {
+                      if (picker.current) picker.current.value = "";
+                      picker.current?.click();
+                    }}
+                    disabled={state.busy}
+                  >
+                    {file ? "Cambia file" : "Scegli la registrazione"}
+                  </button>
+                  <span className="format-note">
+                    M4A, AAC, MP3, WAV, FLAC, Ogg, WebM · fino a 120 MB / 120
+                    min
+                  </span>
+                  <input
+                    ref={picker}
+                    type="file"
+                    accept={AUDIO_ACCEPT}
+                    hidden
+                    onChange={(event) => chooseFile(event.target.files?.[0])}
+                  />
+                </div>
+                {!selected && (
+                  <div className="lesson-fields">
+                    <label>
+                      Titolo della lezione
+                      <input
+                        value={title}
+                        onChange={(event) => setTitle(event.target.value)}
+                        maxLength={200}
+                        placeholder="Es. Introduzione alla psicologia"
+                      />
+                    </label>
+                    <label>
+                      Materia <span>(facoltativa)</span>
+                      <input
+                        value={subject}
+                        onChange={(event) => setSubject(event.target.value)}
+                        maxLength={200}
+                        list="lesson-subjects"
+                        placeholder="Scegli o scrivi una materia"
+                      />
+                      <datalist id="lesson-subjects">
+                        {SUBJECTS.map((entry) => (
+                          <option key={entry} value={entry} />
+                        ))}
+                      </datalist>
+                    </label>
+                  </div>
+                )}
+                <p className="local-note">
+                  La preparazione avviene sul dispositivo. Avviando la
+                  trascrizione, i segmenti saranno inviati a Groq tramite
+                  ProfToPdf. Le lingue parlate vengono conservate senza
+                  traduzione automatica.
+                </p>
+                <button
+                  className="button prepare-button"
+                  disabled={!file || state.busy || storageBusy}
+                  onClick={() => {
+                    if (file) {
+                      void state.start(file, title, subject, selected);
+                      scrollToControl("lecture-progress", true);
+                    }
+                  }}
+                >
+                  {selected?.job.error?.code === "AUDIO_NORMALIZATION_REQUIRED"
+                    ? "Prepara versione WAV compatibile"
+                    : selected
+                      ? "Riprendi la preparazione"
+                      : "Prepara la lezione"}{" "}
+                  <span aria-hidden="true">→</span>
+                </button>
+              </>
+            )}
+            {state.busy ||
+            selected?.preparedChunkIds.length ||
+            selected?.job.stage === "ready" ? (
+              <div
+                id="lecture-progress"
+                tabIndex={-1}
+                className="progress-card"
+                aria-live="polite"
+              >
+                <div className="progress-heading">
+                  <strong>
+                    {state.busy
+                      ? (state.progress?.message ?? "Preparazione in corso")
+                      : selected?.job.stage === "completed"
+                        ? "La dispensa è pronta."
+                        : selected?.job.stage === "ready"
+                          ? "La registrazione è pronta."
+                          : "Ripartiamo dal lavoro salvato."}
+                  </strong>
+                  <span>
+                    {state.progress?.fraction === null
+                      ? "In corso"
+                      : `${Math.floor(fraction * 100)}%`}
+                  </span>
+                </div>
+                {state.progress?.fraction === null ? (
+                  <progress aria-label="Analisi del formato audio" />
+                ) : (
+                  <progress
+                    max={1}
+                    value={fraction}
+                    aria-label={
+                      state.progress?.stage === "analyzing"
+                        ? "Verifica del file"
+                        : "Preparazione audio"
+                    }
+                  />
+                )}
+                <p>
+                  {selected?.preparedChunkIds.length ?? 0} segmenti salvati sul
+                  dispositivo.{" "}
+                  {state.busy
+                    ? "Tieni questa pagina aperta: cambiando app la preparazione va in pausa."
+                    : selected?.job.stage === "completed"
+                      ? "Appunti salvati. Puoi modificarli e scaricare il PDF."
+                      : selected?.job.stage === "ready"
+                        ? "Puoi avviare la trascrizione e creare la dispensa."
+                        : "Per riprendere, seleziona la stessa registrazione."}
+                </p>
+                {state.busy && (
+                  <div className="job-actions">
+                    <button
+                      className="button button-secondary"
+                      onClick={state.pause}
+                    >
+                      Metti in pausa
+                    </button>
+                    <button
+                      className="text-button danger"
+                      onClick={state.cancel}
+                    >
+                      Annulla elaborazione
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : null}
+            {(state.error || selected?.job.error?.message) && (
+              <div className="feedback feedback-error" role="alert">
+                {state.error || selected?.job.error?.message}
+              </div>
+            )}
+            {notice && (
+              <div className="feedback" role="status">
+                {notice}
+              </div>
+            )}
+            {selected && (
+              <div className="job-actions">
+                <button className="text-button" onClick={downloadDiagnostics}>
+                  Scarica log diagnostico
+                </button>
+              </div>
+            )}
+            {selected && (
+              <ProcessingPanel
+                local={selected}
+                busy={state.busy || storageBusy}
+                csrfToken={csrfToken}
+                key={selected.job.id}
+                onProcess={(options) => {
+                  void state.process(selected, csrfToken, options);
+                  scrollToControl("lecture-progress", true);
+                }}
+                onSaved={state.refresh}
+                onError={(message) => state.setError(message)}
+              />
+            )}
+            {selected && (
+              <div className="job-actions">
+                <button
+                  className="text-button"
+                  disabled={
+                    state.busy ||
+                    !selected.manifest.source.sha256 ||
+                    storageBusy
+                  }
+                  onClick={downloadCheckpoint}
+                >
+                  Esporta checkpoint
+                </button>
+                <button
+                  className="text-button danger"
+                  disabled={storageBusy}
+                  onClick={() => void deleteSelected()}
+                >
+                  {storageBusy ? "Eliminazione…" : "Elimina lezione"}
+                </button>
+              </div>
+            )}
+          </section>
+        )}
       </div>
     </main>
   );

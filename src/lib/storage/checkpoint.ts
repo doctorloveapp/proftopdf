@@ -81,6 +81,7 @@ export function importCheckpoint(text: string): LocalJob {
   return {
     title: data.title,
     subject: data.subject,
+    pdfGenerationTracked: true,
     preparedChunkIds: [],
     manifest: {
       version: 1,
