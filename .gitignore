@@ -1,0 +1,42 @@
+Documenti/
+**/Documenti/
+venv/
+env/
+piano_ProfToPdf.md
+
+# Secrets: no exceptions, including .env.example (safe tracked template in config/)
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+
+# Dependencies, generated output and deployment state
+node_modules/
+.next/
+out/
+dist/
+build/
+.vercel/
+.turbo/
+.cache/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+# Runtime and temporary files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+docs/ 
