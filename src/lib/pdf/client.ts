@@ -1,8 +1,10 @@
 import type { LectureDocument } from "@/lib/shared/types";
+import type { PdfDiagnostic } from "./diagnostics";
 export function createPdf(
   document: LectureDocument,
   markdown: string | undefined,
   signal: AbortSignal,
+  onDiagnostic?: PdfDiagnostic,
 ): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const worker = new Worker("/pdf/pdf.worker.js", { type: "module" });
@@ -26,6 +28,10 @@ export function createPdf(
       );
     };
     worker.onmessage = ({ data }) => {
+      if (data.type === "font-diagnostic") {
+        onDiagnostic?.(data.event, data.details);
+        return;
+      }
       close();
       if (data.ok && data.buffer instanceof ArrayBuffer)
         resolve(new Blob([data.buffer], { type: "application/pdf" }));

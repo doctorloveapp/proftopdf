@@ -4,6 +4,7 @@ import type { LectureDocument } from "@/lib/shared/types";
 import { documentMarkdown, markdownBlocks } from "@/lib/notes/markdown";
 import { inline } from "@/lib/notes/assemble";
 import { documentHeading } from "./naming";
+import type { PdfDiagnostic } from "./diagnostics";
 const WIDTH = 595.28,
   HEIGHT = 841.89,
   MARGIN = 48,
@@ -28,7 +29,13 @@ function clean(text: string) {
 export async function renderLecturePdf(
   document: LectureDocument,
   markdown: string | undefined,
-  fonts: { regular: Uint8Array; bold: Uint8Array },
+  fonts: {
+    regular: Uint8Array;
+    bold: Uint8Array;
+    math?: Uint8Array;
+    loadMath?: () => Promise<Uint8Array>;
+    onDiagnostic?: PdfDiagnostic;
+  },
 ) {
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
@@ -42,6 +49,73 @@ export async function renderLecturePdf(
   ]);
   const regularChars = new Set(regular.getCharacterSet()),
     boldChars = new Set(bold.getCharacterSet());
+  const heading = documentHeading(document);
+  const markup = markdown ?? documentMarkdown(document);
+  // Preserve mathematical alphabets as distinct Unicode symbols. NFKC would
+  // collapse script/double-struck letters and superscripts into other notation.
+  const missing = new Set(
+    Array.from(
+      clean(`${heading} ${document.title} ${document.subject} ${markup}`),
+    )
+      .map((char) => char.codePointAt(0)!)
+      .filter((code) => !regularChars.has(code) && !boldChars.has(code)),
+  );
+  let math: PDFFont | undefined;
+  if (missing.size) {
+    if (!fonts.math && fonts.loadMath)
+      fonts.onDiagnostic?.("pdf.font.loading", { font: "NotoSansMath" });
+    const bytes = fonts.math ?? (await fonts.loadMath?.());
+    if (bytes) math = await pdf.embedFont(bytes, { subset: false });
+  }
+  const mathChars = new Set(math?.getCharacterSet() ?? []);
+  const supported = [...missing].filter((code) => mathChars.has(code));
+  if (supported.length)
+    fonts.onDiagnostic?.("pdf.font.fallback", {
+      font: "NotoSansMath",
+      glyphs: supported.length,
+      codePoints: supported
+        .slice(0, 12)
+        .map((code) => `U+${code.toString(16).toUpperCase()}`)
+        .join(","),
+    });
+  function fontRuns(text: string, preferred: PDFFont, size: number): Run[] {
+    const output: Run[] = [];
+    let current: PDFFont | undefined,
+      value = "";
+    const flush = () => {
+      if (current && value)
+        output.push({
+          text: value,
+          font: current,
+          width: current.widthOfTextAtSize(value, size),
+        });
+      value = "";
+    };
+    for (const char of text) {
+      const code = char.codePointAt(0)!;
+      const preferredChars = preferred === bold ? boldChars : regularChars;
+      const chosen = preferredChars.has(code)
+        ? preferred
+        : regularChars.has(code)
+          ? regular
+          : boldChars.has(code)
+            ? bold
+            : math && mathChars.has(code)
+              ? math
+              : undefined;
+      if (!chosen)
+        throw new Error(
+          `PDF_UNSUPPORTED_GLYPH U+${code.toString(16).toUpperCase()}`,
+        );
+      if (chosen !== current) {
+        flush();
+        current = chosen;
+      }
+      value += char;
+    }
+    flush();
+    return output;
+  }
   const ink = rgb(0.085, 0.18, 0.22),
     teal = rgb(0.025, 0.32, 0.43),
     muted = rgb(0.34, 0.46, 0.52),
@@ -49,10 +123,16 @@ export async function renderLecturePdf(
   let page: PDFPage,
     y = TOP;
   function shorten(text: string, font: PDFFont, size: number, width: number) {
-    let output = clean(text);
-    while (output.length && font.widthOfTextAtSize(output, size) > width)
-      output = output.slice(0, -1);
-    return output;
+    const characters = Array.from(clean(text));
+    while (
+      characters.length &&
+      fontRuns(characters.join(""), font, size).reduce(
+        (sum, run) => sum + run.width,
+        0,
+      ) > width
+    )
+      characters.pop();
+    return characters.join("");
   }
   function newPage() {
     page = pdf.addPage([WIDTH, HEIGHT]);
@@ -80,28 +160,24 @@ export async function renderLecturePdf(
       line = { runs: [], width: 0 };
     };
     for (const part of inline(clean(text))) {
-      const font = allBold || part.bold ? bold : regular,
-        characters = font === bold ? boldChars : regularChars;
-      for (const char of part.text)
-        if (!characters.has(char.codePointAt(0)!))
-          throw new Error(
-            `PDF_UNSUPPORTED_GLYPH U+${char.codePointAt(0)!.toString(16).toUpperCase()}`,
-          );
+      const font = allBold || part.bold ? bold : regular;
       for (const token of part.text.match(/\S+|\s+/gu) ?? []) {
         const word = /^\s+$/.test(token) ? " " : token;
         if (word === " " && !line.runs.length) continue;
-        const measured = font.widthOfTextAtSize(word, size);
+        const runs = fontRuns(word, font, size);
+        const measured = runs.reduce((sum, run) => sum + run.width, 0);
         if (measured > width) {
           for (const char of word) {
-            const advance = font.widthOfTextAtSize(char, size);
+            const run = fontRuns(char, font, size)[0],
+              advance = run.width;
             if (line.width + advance > width) flush();
-            line.runs.push({ text: char, font, width: advance });
+            line.runs.push(run);
             line.width += advance;
           }
         } else {
           if (line.width + measured > width) flush();
           if (word === " " && !line.runs.length) continue;
-          line.runs.push({ text: word, font, width: measured });
+          line.runs.push(...runs);
           line.width += measured;
         }
       }
@@ -185,8 +261,7 @@ export async function renderLecturePdf(
     draw(lines, 9, MARGIN + 10, amber);
     y -= 12;
   }
-  const heading = documentHeading(document);
-  const blocks = markdownBlocks(markdown ?? documentMarkdown(document));
+  const blocks = markdownBlocks(markup);
   // Canonical first line even for a saved draft from the previous renderer.
   if (blocks[0]?.kind === "heading" && blocks[0].text === heading)
     blocks.shift();
@@ -246,14 +321,19 @@ export async function renderLecturePdf(
     throw new Error("PDF_FONT_METRICS: invalid running header width");
   for (const [index, target] of pages.entries()) {
     // The first visible line on page one is subject + creation date.
-    if (index > 0)
-      target.drawText(header, {
-        x: MARGIN,
-        y: HEIGHT - 32,
-        size: 8,
-        font: regular,
-        color: muted,
-      });
+    if (index > 0) {
+      let cursor = MARGIN;
+      for (const run of fontRuns(header, regular, 8)) {
+        target.drawText(run.text, {
+          x: cursor,
+          y: HEIGHT - 32,
+          size: 8,
+          font: run.font,
+          color: muted,
+        });
+        cursor += run.width;
+      }
+    }
     const label = `${index + 1} / ${pages.length}`;
     target.drawText(label, {
       x: WIDTH - MARGIN - regular.widthOfTextAtSize(label, 8),

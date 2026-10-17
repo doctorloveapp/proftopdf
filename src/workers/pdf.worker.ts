@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import { renderLecturePdf } from "../lib/pdf/render";
 import type { LectureDocument } from "../lib/shared/types";
+import type { PdfDiagnostic } from "../lib/pdf/diagnostics";
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 worker.onmessage = async ({
   data,
@@ -8,18 +9,29 @@ worker.onmessage = async ({
   data: { document: LectureDocument; markdown?: string };
 }) => {
   try {
+    const fetchFont = async (name: string) => {
+      const response = await fetch(
+        new URL(`/fonts/${name}`, worker.location.origin),
+      );
+      if (!response.ok)
+        throw new Error(`PDF_FONT_HTTP ${name} ${response.status}`);
+      return new Uint8Array(await response.arrayBuffer());
+    };
     const fonts = await Promise.all(
       ["NotoSans-Regular.ttf", "NotoSans-Bold.ttf"].map(async (name) => {
-        const response = await fetch(
-          new URL(`/fonts/${name}`, worker.location.origin),
-        );
-        if (!response.ok) throw new Error(`PDF_FONT_HTTP ${response.status}`);
-        return new Uint8Array(await response.arrayBuffer());
+        return fetchFont(name);
       }),
     );
     const bytes = await renderLecturePdf(data.document, data.markdown, {
       regular: fonts[0],
       bold: fonts[1],
+      loadMath: () => fetchFont("NotoSansMath-Regular.ttf"),
+      onDiagnostic: ((event, details) =>
+        worker.postMessage({
+          type: "font-diagnostic",
+          event,
+          details,
+        })) satisfies PdfDiagnostic,
     });
     const buffer = new Uint8Array(bytes).buffer;
     worker.postMessage({ ok: true, buffer }, [buffer]);
@@ -31,7 +43,7 @@ worker.onmessage = async ({
         "Generazione PDF non riuscita. Esporta il log diagnostico; puoi comunque scaricare gli appunti Markdown.";
     if (native.startsWith("PDF_UNSUPPORTED_GLYPH")) {
       code = "PDF_UNSUPPORTED_GLYPH";
-      message = `Il font PDF non contiene un simbolo (${native.split(" ").at(-1)}). Modifica quel simbolo negli appunti e riprova; il testo Markdown resta disponibile.`;
+      message = `I font PDF disponibili non contengono un simbolo (${native.split(" ").at(-1)}). Gli appunti sono salvati: esporta il log oppure modifica il simbolo e riprova solo "Prepara PDF", senza rifare la trascrizione.`;
     } else if (/PDF_FONT_HTTP|fetch|network/i.test(native)) {
       code = "PDF_FONT_LOAD";
       message =

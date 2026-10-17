@@ -188,7 +188,12 @@ export default function ProcessingPanel({
       );
       log("pdf.start", { sections: lecture.sections.length });
       const { createPdf } = await import("@/lib/pdf/client");
-      const blob = await createPdf(lecture, markdown, controller.signal);
+      const blob = await createPdf(
+        lecture,
+        markdown,
+        controller.signal,
+        (event, details) => log?.(event, { ...details }),
+      );
       if (!mounted.current || controller.signal.aborted) return;
       log("pdf.complete", { bytes: blob.size });
       const summary = readAudioTiming(local.job.id);

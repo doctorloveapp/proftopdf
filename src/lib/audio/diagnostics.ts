@@ -9,7 +9,7 @@ import {
   type TimingSummary,
 } from "./timing";
 
-export const AUDIO_REVISION = "llm-cascade-2026-10-17-v7";
+export const AUDIO_REVISION = "pdf-math-font-2026-10-17-v8";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;
