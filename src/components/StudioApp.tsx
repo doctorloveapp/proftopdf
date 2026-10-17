@@ -140,15 +140,14 @@ export default function StudioApp() {
       ) : (
         <main className="login-layout" id="contenuto">
           <section className="login-copy">
-            <p className="eyebrow">MENO RIORDINO. PIÙ STUDIO.</p>
             <h1>
-              Le tue lezioni.
+              Le tue lezioni
               <br />
-              <span>Il tuo filo logico.</span>
+              <span>Le tue trascrizioni</span>
             </h1>
             <p className="hero-description">
               Raccogli le registrazioni, prepara l’audio e riparti dal lavoro
-              già salvato. Un po’ più di ordine, prima del prossimo esame.
+              già salvato.
             </p>
             <div className="login-points">
               <span>01 &nbsp; Scegli la registrazione</span>
@@ -158,7 +157,7 @@ export default function StudioApp() {
           </section>
           <section className="login-card" aria-labelledby="login-title">
             <p className="eyebrow">BENTORNATO</p>
-            <h2 id="login-title">Entra nel tuo spazio.</h2>
+            <h2 id="login-title">Entra in ProfToPdf</h2>
             <p>Usa la password di accesso che ti è stata condivisa.</p>
             <form onSubmit={signIn}>
               <label htmlFor="access-password">Password di accesso</label>
@@ -211,7 +210,6 @@ export default function StudioApp() {
       <footer className="site-footer">
         <span>ProfToPdf</span>
         <p>Trascrivi le tue lezioni</p>
-        <span className="footer-note">Le tue lezioni, in ordine.</span>
       </footer>
     </div>
   );
