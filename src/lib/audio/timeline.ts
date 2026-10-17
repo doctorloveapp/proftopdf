@@ -9,6 +9,26 @@ export function orderAudioFiles(files: readonly File[]): File[] {
     (a, b) => a.lastModified - b.lastModified || names.compare(a.name, b.name),
   );
 }
+/** Keep the user's existing order. Only each newly added group is sorted.
+ * Metadata deduplication is a UI safeguard, not a content-identity check. */
+export function appendAudioFiles(
+  existing: readonly File[],
+  incoming: readonly File[],
+) {
+  const key = (file: File) =>
+    JSON.stringify([file.name, file.size, file.lastModified]);
+  const seen = new Set(existing.map(key));
+  const added: File[] = [];
+  for (const file of orderAudioFiles(incoming)) {
+    if (seen.has(key(file))) continue;
+    seen.add(key(file));
+    added.push(file);
+  }
+  return {
+    files: [...existing, ...added],
+    duplicates: incoming.length - added.length,
+  };
+}
 export function validateAudioSelection(files: readonly File[]) {
   if (!files.length) throw new Error("Scegli almeno una registrazione.");
   if (files.length > MAX_AUDIO_PARTS)

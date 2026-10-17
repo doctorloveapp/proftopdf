@@ -13,6 +13,7 @@ import {
 } from "@/lib/storage/jobs";
 import { createAudioLog } from "@/lib/audio/diagnostics";
 import { audioFailure } from "@/lib/audio/errors";
+import type { AudioDetails } from "@/lib/audio/errors";
 import {
   processLecture,
   type ProcessingOptions,
@@ -76,6 +77,7 @@ export function useAudioJob() {
       title: string,
       subject: string,
       existing?: LocalJob,
+      metadataDiagnostics: AudioDetails[] = [],
     ) => {
       if (!files.length) return;
       if (active.current) return;
@@ -130,6 +132,8 @@ export function useAudioJob() {
       setSelectedId(local.job.id);
       const log = createAudioLog(local.job.id);
       log("job.open", { resume: Boolean(existing) });
+      for (const details of metadataDiagnostics.slice(-200))
+        log("selection.metadata", details);
       try {
         if (!existing) await saveJob(local);
         upsert(local);

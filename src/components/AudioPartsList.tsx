@@ -7,6 +7,7 @@ export interface AudioPartView {
   durationSeconds?: number;
   lastModified?: number;
   durationPending?: boolean;
+  durationErrorCode?: string;
 }
 export default function AudioPartsList({
   items,
@@ -39,7 +40,13 @@ export default function AudioPartsList({
             </span>
             <div className="audio-part-info">
               <strong>{item.name}</strong>
-              <span>
+              <span
+                title={
+                  item.durationErrorCode
+                    ? `Diagnostica durata: ${item.durationErrorCode}`
+                    : undefined
+                }
+              >
                 {item.durationSeconds
                   ? audioDurationText(item.durationSeconds)
                   : item.durationPending

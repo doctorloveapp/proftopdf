@@ -210,7 +210,7 @@ export default function StudioApp() {
       )}
       <footer className="site-footer">
         <span>ProfToPdf</span>
-        <p>Più spazio alle idee, meno al riordino.</p>
+        <p>Trascrivi le tue lezioni</p>
         <span className="footer-note">Le tue lezioni, in ordine.</span>
       </footer>
     </div>

@@ -20,6 +20,11 @@ test("Audio selection accepts multiple files and shows accessible ordering/remov
     }),
   );
   assert(html.includes('multiple=""'));
+  assert(html.includes("Aggiungi registrazioni"));
+  assert(!html.includes("Cambia selezione"));
+  assert(html.includes("Sfoglia tutti i file"));
+  assert(html.includes("Recordings"));
+  assert(!/<details[^>]*\bopen\b/.test(html));
   assert(html.includes("Sposta su lo spezzone 2"));
   assert(html.includes("Rimuovi lo spezzone 1"));
   const saved = renderToStaticMarkup(

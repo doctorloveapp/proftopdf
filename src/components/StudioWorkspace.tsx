@@ -1,12 +1,13 @@
 ﻿"use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAudioJob } from "@/hooks/useAudioJob";
 import { api, ClientApiError } from "@/lib/client/api";
 import { validateFile } from "@/lib/pipeline/prepare-audio";
-import { orderAudioFiles, validateAudioSelection } from "@/lib/audio/timeline";
+import { appendAudioFiles, validateAudioSelection } from "@/lib/audio/timeline";
 import AudioSelection from "./AudioSelection";
 import AudioPartsList from "./AudioPartsList";
+import type { AudioDetails } from "@/lib/audio/errors";
 import { removeJob, saveJob, type LocalJob } from "@/lib/storage/jobs";
 import { importCheckpoint, exportCheckpoint } from "@/lib/storage/checkpoint";
 import { exportAudioLog, removeAudioLog } from "@/lib/audio/diagnostics";
@@ -43,6 +44,15 @@ export default function StudioWorkspace({
   const state = useAudioJob();
   const [editorOpen, setEditorOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const metadataDiagnostics = useRef(new Map<File, AudioDetails[]>());
+  const recordMetadata = useCallback((file: File, details: AudioDetails) => {
+    const previous = metadataDiagnostics.current.get(file) ?? [];
+    metadataDiagnostics.current.set(file, [...previous.slice(-3), details]);
+  }, []);
+  useEffect(() => {
+    for (const file of metadataDiagnostics.current.keys())
+      if (!files.includes(file)) metadataDiagnostics.current.delete(file);
+  }, [files]);
   const [title, setTitle] = useState(""),
     [subject, setSubject] = useState("");
   const [quotas, setQuotas] = useState<{
@@ -97,9 +107,14 @@ export default function StudioWorkspace({
     if (!candidates.length || state.busy) return;
     try {
       candidates.forEach(validateFile);
-      validateAudioSelection(candidates);
-      setFiles(orderAudioFiles(candidates));
-      setNotice("");
+      const combined = appendAudioFiles(files, candidates);
+      validateAudioSelection(combined.files);
+      setFiles(combined.files);
+      setNotice(
+        combined.duplicates
+          ? "Le registrazioni già selezionate non sono state aggiunte due volte."
+          : "",
+      );
       state.setError("");
     } catch (error) {
       state.setError(
@@ -114,6 +129,7 @@ export default function StudioWorkspace({
     scrollToControl("audio-picker-button", true);
   }
   function resetLesson() {
+    metadataDiagnostics.current.clear();
     setEditorOpen(false);
     state.setSelectedId(null);
     setFiles([]);
@@ -124,6 +140,7 @@ export default function StudioWorkspace({
   }
   function selectLesson(local: LocalJob) {
     if (state.busy) return;
+    metadataDiagnostics.current.clear();
     state.setSelectedId(local.job.id);
     setEditorOpen(true);
     setFiles([]);
@@ -270,11 +287,7 @@ export default function StudioWorkspace({
         <div className="studio-intro">
           <div>
             <p className="eyebrow">IL TUO SPAZIO DI STUDIO</p>
-            <h1>
-              Una lezione.
-              <br />
-              <span>Un nuovo punto di partenza.</span>
-            </h1>
+            <h1>Crea i tuoi appunti</h1>
           </div>
           <p>
             Prepara la registrazione sul tuo dispositivo.
@@ -489,6 +502,7 @@ export default function StudioWorkspace({
                   restoring={Boolean(selected)}
                   onChoose={chooseFiles}
                   onOrder={setFiles}
+                  onMetadata={recordMetadata}
                 />
                 {!selected && (
                   <div className="lesson-fields">
@@ -529,7 +543,17 @@ export default function StudioWorkspace({
                   disabled={!files.length || state.busy || storageBusy}
                   onClick={() => {
                     if (files.length) {
-                      void state.start(files, title, subject, selected);
+                      void state.start(
+                        files,
+                        title,
+                        subject,
+                        selected,
+                        files.flatMap((file, part) =>
+                          (metadataDiagnostics.current.get(file) ?? []).map(
+                            (details) => ({ ...details, part }),
+                          ),
+                        ),
+                      );
                       scrollToControl("lecture-progress", true);
                     }
                   }}

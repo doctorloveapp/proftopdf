@@ -9,7 +9,7 @@ import {
   type TimingSummary,
 } from "./timing";
 
-export const AUDIO_REVISION = "multi-audio-groq-first-2026-10-17-v10";
+export const AUDIO_REVISION = "audio-picker-m4a-2026-10-17-v11";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;
