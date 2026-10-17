@@ -2,6 +2,7 @@ import {
   notesOutputSchema,
   outlineOutputSchema,
   NOTES_RESULT_BYTES,
+  STT_UNCERTAINTY_NOTICE,
   utf8Bytes,
   type NotesRequest,
   type NotesOutput,
@@ -66,7 +67,13 @@ export function validateNotesOutput(
       );
     return data;
   }
-  const parsed = notesOutputSchema.safeParse(raw);
+  // The model supplies academic content and its citations. Coverage metadata
+  // and STT warnings belong to the application; also accept old full outputs.
+  const withMetadata =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { coveredSourceIds: [], uncertainties: [], ...raw }
+      : raw;
+  const parsed = notesOutputSchema.safeParse(withMetadata);
   if (!parsed.success) {
     const diagnostics = schemaDiagnostics(parsed.error.issues);
     const first = diagnostics.issues[0];
@@ -120,33 +127,77 @@ export function validateNotesOutput(
       text: item.text.trim(),
       sourceIds: ids(item.sourceIds),
     }));
-  data.coveredSourceIds = ids(data.coveredSourceIds);
-  const referenced = [
-    ...data.coveredSourceIds,
-    ...data.sections.flatMap((s) => s.sourceIds),
-    ...data.glossary.flatMap((g) => g.sourceIds),
-    ...data.uncertainties.flatMap((u) => u.sourceIds),
-  ];
-  const covered = new Set(data.coveredSourceIds),
-    sectionSources = new Set(data.sections.flatMap((s) => s.sourceIds));
-  const uncertain = new Set(data.uncertainties.flatMap((u) => u.sourceIds));
-  if (
-    data.sections.some((section) => !section.sourceIds.length) ||
-    data.glossary.some((term) => !term.sourceIds.length) ||
-    data.uncertainties.some((item) => !item.sourceIds.length) ||
-    referenced.some((id) => !allowedSet.has(id)) ||
-    allowed.some((id) => !covered.has(id) || !sectionSources.has(id)) ||
-    input.sources.some((s) => s.uncertain && !uncertain.has(s.id))
-  )
+  const issues: { path: string; code: string }[] = [];
+  let unknownReferenceCount = 0,
+    emptyReferenceCount = 0;
+  for (const [field, entries] of [
+    ["sections", data.sections],
+    ["glossary", data.glossary],
+    ["uncertainties", data.uncertainties],
+  ] as const)
+    for (const [index, entry] of entries.entries()) {
+      if (!entry.sourceIds.length) {
+        emptyReferenceCount++;
+        issues.push({
+          path: `${field}.${index}.sourceIds`,
+          code: "empty_source_references",
+        });
+      }
+      for (const [refIndex, id] of entry.sourceIds.entries())
+        if (!allowedSet.has(id)) {
+          unknownReferenceCount++;
+          // Only numeric locations, never the unexpected model-generated ID.
+          issues.push({
+            path: `${field}.${index}.sourceIds.${refIndex}`,
+            code: "unknown_source_reference",
+          });
+        }
+    }
+  const sectionSources = new Set(data.sections.flatMap((s) => s.sourceIds));
+  const missing = allowed.filter((id) => !sectionSources.has(id));
+  for (const id of missing)
+    issues.push({
+      path: `sources.${allowed.indexOf(id)}`,
+      code: "source_not_linked_to_section",
+    });
+  if (issues.length)
     outputError(
       "NOTES_COVERAGE",
-      "Gli appunti non coprono tutte le fonti o omettono un passaggio incerto. L’unità non è stata marcata completa.",
+      `Riferimenti degli appunti da correggere: ${missing.length} fonti assenti dalle sezioni, ${unknownReferenceCount} riferimenti sconosciuti, ${emptyReferenceCount} elenchi di riferimenti vuoti. La trascrizione è conservata.`,
       {
         stage: "coverage",
+        issueCount: issues.length,
+        issues: issues.slice(0, 6),
+        coverage: {
+          sourceCount: allowed.length,
+          missingSectionSourceCount: missing.length,
+          unknownReferenceCount,
+          emptyReferenceCount,
+        },
+      },
+    );
+  // Coverage is derived from validated section references, never from the
+  // model's redundant self-reported list. Missing real references still fail.
+  data.coveredSourceIds = allowed.filter((id) => sectionSources.has(id));
+  // STT flags are facts already known to the application, not a task to repeat
+  // perfectly in each LLM response. Preserve them deterministically in notes.
+  const warned = new Set(data.uncertainties.flatMap((u) => u.sourceIds));
+  const unwarned = input.sources
+    .filter((source) => source.uncertain && !warned.has(source.id))
+    .map((source) => source.id);
+  if (unwarned.length)
+    data.uncertainties.push({
+      text: STT_UNCERTAINTY_NOTICE,
+      sourceIds: unwarned,
+    });
+  if (utf8Bytes(JSON.stringify(data)) > NOTES_RESULT_BYTES)
+    outputError(
+      "NOTES_SIZE",
+      "Gli appunti normalizzati superano il limite di recupero sicuro.",
+      {
+        stage: "size",
         issueCount: 1,
-        issues: [
-          { path: "sourceIds", code: "missing_unknown_or_uncertain_sources" },
-        ],
+        issues: [{ path: "$", code: "normalized_response_too_large" }],
       },
     );
   return data;

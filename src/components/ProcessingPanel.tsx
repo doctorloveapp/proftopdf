@@ -107,6 +107,16 @@ export default function ProcessingPanel({
   const failureKey = data?.failedUnitId ?? `stt-${data?.failedChunkIndex}`;
   const attemptsRemaining =
     (data?.attempts[failureKey] ?? 0) < MAX_ATTEMPTS - 1;
+  const failedNotesUnit = data?.notesPlan?.units.find(
+    (unit) => `notes-${unit.id}` === data.failedUnitId,
+  );
+  const canSplitFailed =
+    failedNotesUnit &&
+    failedNotesUnit.sources.length > 1 &&
+    (data?.notesPlan?.splitDepths?.[failedNotesUnit.id] ?? 0) < 1 &&
+    ["NOTES_COVERAGE", "NOTES_TRUNCATED", "NOTES_JSON"].includes(
+      local.job.error?.code ?? "",
+    );
   const filename = documentFileStem(
     lecture ?? {
       title: local.title,
@@ -274,8 +284,9 @@ export default function ProcessingPanel({
               </p>
               {!attemptsRemaining && (
                 <p className="local-note">
-                  Tre tentativi già utilizzati per questa unità. Esporta il log
-                  per verificare la causa; il lavoro confermato è conservato.
+                  {canSplitFailed
+                    ? "Tre tentativi già utilizzati. Premi Riprendi: il gruppo verrà diviso in due parti più semplici, mantenendo il lavoro già salvato."
+                    : "Tre tentativi già utilizzati per questa unità. Esporta il log per verificare la causa; il lavoro confermato è conservato."}
                 </p>
               )}
               <button

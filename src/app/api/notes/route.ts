@@ -40,12 +40,6 @@ export async function POST(request: NextRequest) {
       );
     const input = parsed.data,
       payload = buildNotesRequest(input);
-    if (payload.tokenUpperBound > config.LLM_TOKENS_PER_MINUTE)
-      throw new RouteError(
-        413,
-        "TOKEN_BUDGET",
-        "Questa unità supera il budget gratuito. Riduci la dimensione delle unità di testo.",
-      );
     const revision =
       input.languagePolicy === "original"
         ? `${PROCESSING_REVISION}:${LANGUAGE_POLICY_REVISION}`

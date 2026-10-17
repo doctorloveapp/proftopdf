@@ -132,6 +132,12 @@ export interface ErrorDiagnostics {
   stage: "structure" | "content" | "coverage" | "json" | "completion" | "size";
   issueCount: number;
   issues: { path: string; code: string; expected?: string }[];
+  coverage?: {
+    sourceCount: number;
+    missingSectionSourceCount: number;
+    unknownReferenceCount: number;
+    emptyReferenceCount: number;
+  };
 }
 
 export type ApiResult<T> =

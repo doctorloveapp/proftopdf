@@ -118,7 +118,7 @@ test("Structural errors identify schema paths/types but never copy model text or
     assert(!JSON.stringify(failure.diagnostics).includes("secret_field"));
   }
 });
-test("Meaningful title/body/source/uncertainty checks and truncation remain mandatory", () => {
+test("Meaningful title/body/source checks remain mandatory and STT uncertainty is preserved even when the model omits it", () => {
   for (const raw of [
     { ...valid(), sections: [] },
     { ...valid(), sections: [{ ...valid().sections[0], title: " " }] },
@@ -129,12 +129,12 @@ test("Meaningful title/body/source/uncertainty checks and truncation remain mand
     },
   ])
     assert.throws(() => validateNotesOutput(input(), raw));
-  assert.throws(() =>
-    validateNotesOutput(
-      { ...input(), sources: [{ ...input().sources[0], uncertain: true }] },
-      valid(),
-    ),
-  );
+  const uncertain = validateNotesOutput(
+    { ...input(), sources: [{ ...input().sources[0], uncertain: true }] },
+    valid(),
+  ) as NotesOutput;
+  assert.equal(uncertain.uncertainties.length, 1);
+  assert.deepEqual(uncertain.uncertainties[0].sourceIds, ["s0"]);
   assert.throws(
     () => acceptNotesCompletion(input(), "length", JSON.stringify(valid())),
     { code: "NOTES_TRUNCATED" },

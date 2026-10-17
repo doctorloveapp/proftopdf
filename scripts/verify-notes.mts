@@ -11,7 +11,11 @@ import {
 } from "../src/lib/server/auth-crypto";
 import { getRedis } from "../src/lib/server/redis";
 import { getQuotaSnapshot } from "../src/lib/server/quota";
-import { planNotes, groupTextSources } from "../src/lib/notes/batching";
+import {
+  planNotes,
+  groupTextSources,
+  splitFailedNotesUnit,
+} from "../src/lib/notes/batching";
 import { materializeSections } from "../src/lib/notes/assemble";
 import { buildNotesRequest } from "../src/lib/notes/prompt";
 import {
@@ -99,40 +103,93 @@ try {
     subject: "Fisica",
     languagePolicy: "original" as const,
   };
-  const text =
-    "La seconda legge della dinamica è F = ma. La forza risultante è la somma vettoriale delle forze applicate al corpo. Consideriamo un piano inclinato: il peso si scompone in una componente parallela e una perpendicolare. Il lavoro trasferisce energia al sistema e l’attrito dissipa energia meccanica. La massa si misura in kg, la forza in newton e il lavoro in joule. ".repeat(
-      30,
-    );
+  const passages = [
+    "La posizione individua un punto rispetto a un riferimento. Lo spostamento è la differenza vettoriale tra posizione finale e iniziale; non coincide sempre con la distanza percorsa.",
+    "La velocità media è il rapporto tra spostamento e intervallo temporale. La velocità istantanea è il limite di questo rapporto per intervalli sempre più piccoli.",
+    "L’accelerazione misura la variazione della velocità nel tempo. Un cambiamento di direzione implica accelerazione anche quando il modulo della velocità resta costante.",
+    "Nel moto rettilineo uniforme la velocità è costante. La legge oraria è x = x0 + vt; il grafico posizione-tempo è una retta la cui pendenza rappresenta la velocità.",
+    "Nel moto uniformemente accelerato valgono v = v0 + at e x = x0 + v0t + at²/2. Le formule richiedono accelerazione costante nell’intervallo considerato.",
+    "Il principio d’inerzia descrive un corpo con forza risultante nulla: mantiene la quiete oppure il moto rettilineo uniforme rispetto a un sistema inerziale.",
+    "La seconda legge della dinamica è F = ma per massa costante. La forza risultante è la somma vettoriale delle forze e determina l’accelerazione del corpo.",
+    "Nel principio di azione e reazione le due forze agiscono su corpi differenti. Non si annullano nel diagramma delle forze di un singolo corpo.",
+    "Il peso è una forza gravitazionale di modulo mg. La massa si misura in chilogrammi, il peso in newton; una bilancia a molla misura una forza.",
+    "Sul piano inclinato il peso si scompone in mg sen α e mg cos α. La reazione normale dipende dalle forze perpendicolari al piano e non è sempre uguale al peso.",
+    "L’attrito statico si adatta entro il valore massimo μs N. L’attrito dinamico si oppone allo scorrimento e ha modulo μd N nel modello scolastico semplificato.",
+    "Il lavoro di una forza costante è W = Fs cos θ. Una forza perpendicolare allo spostamento compie lavoro nullo; il segno dipende dall’orientamento relativo.",
+    "L’energia cinetica è mv²/2. Il teorema dell’energia cinetica collega la sua variazione al lavoro totale delle forze applicate al corpo.",
+    "L’energia potenziale gravitazionale vicino alla superficie terrestre è mgh. La quota zero è arbitraria; differenze di energia potenziale hanno significato fisico.",
+    "Se agiscono solo forze conservative, l’energia meccanica resta costante. L’attrito può trasformare parte dell’energia meccanica in energia interna.",
+    "La potenza media è il lavoro diviso per il tempo impiegato. Si misura in watt e distingue processi che trasferiscono la stessa energia in intervalli diversi.",
+    "La quantità di moto è il prodotto della massa per la velocità. In un sistema isolato la quantità di moto totale si conserva durante un urto.",
+    "Un urto elastico conserva anche l’energia cinetica totale. In un urto completamente anelastico i corpi restano uniti; la quantità di moto si conserva se il sistema è isolato.",
+    "La pressione è il rapporto tra forza normale e area. A parità di forza, un’area minore produce pressione maggiore; l’unità SI è il pascal.",
+    "Nel modello del gas ideale pV = nRT. La temperatura va espressa in kelvin; il modello trascura volume proprio delle particelle e interazioni a distanza.",
+  ];
   const plan = await planNotes(
-    [
-      {
-        id: "s0",
-        chunkId: "c0",
-        startSeconds: 0,
-        endSeconds: 600,
-        text,
-        status: "confirmed",
-      },
-    ],
+    passages.map((text, index) => ({
+      id: `s3-${index}`,
+      chunkId: "c3",
+      startSeconds: index * 20,
+      endSeconds: (index + 1) * 20,
+      text,
+      status: index % 3 === 0 ? ("uncertain" as const) : ("confirmed" as const),
+    })),
     emptyProcessing(),
     context,
   );
-  const unit = plan.units[0],
-    input: NotesRequest = {
-      ...context,
-      unitId: unit.id,
-      mode: "notes",
-      attempt: 0,
-      sources: unit.sources,
-    };
+  const unit = plan.units[0];
+  plan.units = [unit];
+  const input: NotesRequest = {
+    ...context,
+    unitId: unit.id,
+    mode: "notes",
+    attempt: 0,
+    sources: unit.sources,
+  };
   const before = await getQuotaSnapshot("notes");
   stage = "dense-notes";
   const start = performance.now(),
-    output: NotesOutput = await infer(input),
-    afterNotes = await getQuotaSnapshot("notes");
+    noteMap: Record<string, NotesOutput> = {};
+  let failedBatches = 0,
+    reservationSum = 0;
+  for (let index = 0; index < plan.units.length; index++) {
+    const batch = plan.units[index],
+      batchInput = { ...input, unitId: batch.id, sources: batch.sources };
+    reservationSum += buildNotesRequest(batchInput).tokenUpperBound;
+    try {
+      const output: NotesOutput = await infer(batchInput);
+      assert.deepEqual(
+        output.coveredSourceIds,
+        batch.sources.map((source) => source.id),
+      );
+      const warnings = new Set(
+        output.uncertainties.flatMap((warning) => warning.sourceIds),
+      );
+      assert(
+        batch.sources
+          .filter((source) => source.uncertain)
+          .every((source) => warnings.has(source.id)),
+      );
+      assert.deepEqual(await infer(batchInput), output, "CACHE_REPLAY_CHANGED");
+      noteMap[batch.id] = output;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        ["CHECK_502_NOTES_TRUNCATED", "CHECK_502_NOTES_COVERAGE"].includes(
+          error.message,
+        ) &&
+        splitFailedNotesUnit(plan, batch.id)
+      ) {
+        failedBatches++;
+        index--;
+        continue;
+      }
+      throw error;
+    }
+  }
+  const afterNotes = await getQuotaSnapshot("notes");
   const noteSeconds = (performance.now() - start) / 1000;
-  assert.deepEqual(await infer(input), output, "CACHE_REPLAY_CHANGED");
-  const sections = materializeSections([unit], { [unit.id]: output });
+  const sections = materializeSections(plan.units, noteMap);
   const outlines = await groupTextSources(
     sections.map((s) => ({ id: s.id, text: s.title, uncertain: false })),
     context,
@@ -150,9 +207,12 @@ try {
     after = await getQuotaSnapshot("notes");
   const noteTokens = daily(afterNotes, "tokens") - daily(before, "tokens");
   const outlineTokens = daily(after, "tokens") - daily(afterNotes, "tokens");
-  assert.equal(daily(after, "requests") - daily(before, "requests"), 2);
+  assert.equal(
+    daily(after, "requests") - daily(before, "requests"),
+    plan.units.length + failedBatches + 1,
+  );
   assert(
-    noteTokens > 0 && noteTokens < buildNotesRequest(input).tokenUpperBound,
+    noteTokens > 0 && noteTokens < reservationSum,
     "NOTES_USAGE_NOT_SETTLED",
   );
   assert(
@@ -167,14 +227,27 @@ try {
       "real free Groq/Redis, synthetic Italian physics TEXT; direct route calls, no audio or browser",
     noteSeconds: Math.round(noteSeconds * 10) / 10,
     sources: input.sources.length,
+    uncertainSources: input.sources.filter((source) => source.uncertain).length,
+    coveredSources: Object.values(noteMap).reduce(
+      (n, output) => n + output.coveredSourceIds.length,
+      0,
+    ),
+    uncertaintyWarnings: Object.values(noteMap).reduce(
+      (n, output) => n + output.uncertainties.length,
+      0,
+    ),
     sourceCharacters: input.sources.reduce((n, s) => n + s.text.length, 0),
-    notesSections: output.sections.length,
-    glossaryTerms: output.glossary.length,
+    notesSections: sections.length,
+    glossaryTerms: Object.values(noteMap).reduce(
+      (n, output) => n + output.glossary.length,
+      0,
+    ),
     chapters: outline.chapters.length,
     cacheReplayIdentical: true,
-    upstreamRequests: 2,
+    upstreamRequests: plan.units.length + failedBatches + 1,
+    splitBatches: failedBatches,
     notes: {
-      reservation: buildNotesRequest(input).tokenUpperBound,
+      reservation: reservationSum,
       confirmedTokens: noteTokens,
     },
     outline: {
@@ -184,7 +257,7 @@ try {
   };
   await mkdir("docs", { recursive: true });
   await writeFile(
-    "docs/notes-live-check.json",
+    "docs/notes-coverage-live-check.json",
     JSON.stringify(report, null, 2) + "\n",
   );
   console.log(JSON.stringify(report, null, 2));

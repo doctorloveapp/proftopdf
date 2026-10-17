@@ -191,12 +191,31 @@ test("Notes cannot hide uncovered/uncertain sources, invent references, or reord
     coveredSourceIds: ["s0"],
   };
   assert.deepEqual(validateNotesOutput(input, valid), valid);
-  assert.throws(()=>validateNotesOutput(input,{...valid,sections:[{...valid.sections[0],paragraphs:[]}]}));
   assert.throws(() =>
-    validateNotesOutput(input, { ...valid, uncertainties: [] }),
+    validateNotesOutput(input, {
+      ...valid,
+      sections: [{ ...valid.sections[0], paragraphs: [] }],
+    }),
+  );
+  const warned = validateNotesOutput(input, {
+    ...valid,
+    uncertainties: [],
+  }) as NotesOutput;
+  assert.deepEqual(warned.uncertainties[0].sourceIds, ["s0"]);
+  assert.deepEqual(
+    (
+      validateNotesOutput(input, {
+        ...valid,
+        coveredSourceIds: ["invented"],
+      }) as NotesOutput
+    ).coveredSourceIds,
+    ["s0"],
   );
   assert.throws(() =>
-    validateNotesOutput(input, { ...valid, coveredSourceIds: ["invented"] }),
+    validateNotesOutput(input, {
+      ...valid,
+      sections: [{ ...valid.sections[0], sourceIds: ["invented"] }],
+    }),
   );
   const outline = {
     ...input,

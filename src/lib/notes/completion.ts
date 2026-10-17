@@ -19,7 +19,16 @@ export function acceptNotesCompletion(
       {
         stage: "completion",
         issueCount: 1,
-        issues: [{ path: "$", code: "incomplete_response", expected: "stop" }],
+        issues: [
+          {
+            path: "$",
+            code:
+              finishReason === "length"
+                ? "completion_token_limit"
+                : "incomplete_response",
+            expected: "stop",
+          },
+        ],
       },
     );
   if (utf8Bytes(content) > NOTES_RESULT_BYTES)

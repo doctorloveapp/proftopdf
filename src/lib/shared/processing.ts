@@ -6,6 +6,9 @@ export const NOTES_SOURCE_BYTES = 1200;
 export const NOTES_MAX_OUTPUT = 2400;
 export const MAX_ATTEMPTS = 3;
 export const NOTES_RESULT_BYTES = 44_000;
+export const NOTES_BUDGET_REVISION = "coverage-v2";
+export const STT_UNCERTAINTY_NOTICE =
+  "Questo passaggio della trascrizione è segnalato come incerto: confrontalo con la registrazione originale prima di studiarlo.";
 export const REPAIRABLE_NOTES_CODES = new Set([
   "NOTES_INVALID",
   "NOTES_JSON",
@@ -107,6 +110,8 @@ export interface ProcessingData {
   markdownDraft?: string;
   notesPlan?: {
     version: "bpe-v1";
+    budgetRevision?: string;
+    splitDepths?: Record<string, number>;
     sourceDigest: string;
     units: { id: string; sources: SourceItem[] }[];
   };

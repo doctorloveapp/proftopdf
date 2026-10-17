@@ -206,6 +206,12 @@ export async function processLecture(
         // Each repair gets its own persisted, quota-reserved attempt (max 3).
         if (
           stage === "generating-notes" &&
+          key.startsWith("notes-") &&
+          known?.code === "NOTES_TRUNCATED"
+        )
+          throw error;
+        if (
+          stage === "generating-notes" &&
           known &&
           REPAIRABLE_NOTES_CODES.has(known.code) &&
           (data.attempts[key] ?? 0) < MAX_ATTEMPTS - 1
@@ -346,7 +352,7 @@ export async function processLecture(
     const segments = mergeTranscripts(current.manifest, data.transcripts);
     message = "Organizzazione del testo entro il budget gratuito";
     await save("generating-notes");
-    const { planNotes, groupTextSources } =
+    const { planNotes, groupTextSources, splitFailedNotesUnit } =
       await import("@/lib/notes/batching");
     abortIfNeeded(combined);
     const context = {
@@ -359,6 +365,34 @@ export async function processLecture(
     };
     data.notesPlan = await planNotes(segments, data, context, combined);
     const units = data.notesPlan.units;
+    async function splitFailed(key: string, code: string) {
+      if (
+        !key.startsWith("notes-") ||
+        (code !== "NOTES_TRUNCATED" &&
+          (!["NOTES_COVERAGE", "NOTES_JSON"].includes(code) ||
+            (data.attempts[key] ?? 0) < MAX_ATTEMPTS - 1))
+      )
+        return false;
+      const result = splitFailedNotesUnit(
+        data.notesPlan!,
+        key.slice("notes-".length),
+      );
+      if (!result) return false;
+      log("notes.split", {
+        unit: key,
+        sources: result.parent.sources.length,
+        children: result.children.length,
+        reason: code,
+      });
+      delete data.failedUnitId;
+      message =
+        "Recupero appunti: il gruppo non valido è stato diviso in due parti più semplici";
+      // Persist before issuing either child, including the one-level split bound.
+      await save("generating-notes");
+      return true;
+    }
+    if (data.failedUnitId && priorError)
+      await splitFailed(data.failedUnitId, priorError.code);
     log("notes.plan", {
       units: units.length,
       confirmed: units.filter((unit) => data.notes[unit.id]).length,
@@ -411,10 +445,34 @@ export async function processLecture(
         ...Object.keys(data.outlines),
       ];
       await save("generating-notes");
-      log("notes.saved", { unit: unit.id, mode });
+      log("notes.saved", {
+        unit: unit.id,
+        mode,
+        sources: unit.sources.length,
+        uncertainSources: unit.sources.filter((source) => source.uncertain)
+          .length,
+        ...(mode === "notes"
+          ? {
+              uncertaintyWarnings: (response as NotesOutput).uncertainties
+                .length,
+            }
+          : {}),
+      });
     }
-    for (const [index, unit] of units.entries())
-      await generate(unit, "notes", index, units.length);
+    for (let index = 0; index < units.length; index++) {
+      try {
+        await generate(units[index], "notes", index, units.length);
+      } catch (error) {
+        if (
+          error instanceof ClientApiError &&
+          (await splitFailed(`notes-${units[index].id}`, error.code))
+        ) {
+          index--;
+          continue;
+        }
+        throw error;
+      }
+    }
     const outlineUnits = await groupTextSources(
       buildOutlineUnits(materializeSections(units, data.notes)).flatMap(
         (unit) => unit.sources,

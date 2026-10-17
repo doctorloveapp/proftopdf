@@ -3,6 +3,7 @@ import { buildTextUnits, unitId, type TextUnit } from "./assemble";
 import { buildNotesRequest } from "./prompt";
 import {
   utf8Bytes,
+  NOTES_BUDGET_REVISION,
   type NotesRequest,
   type ProcessingData,
   type SourceItem,
@@ -83,8 +84,57 @@ export async function planNotes(
   if (
     data.notesPlan?.version === "bpe-v1" &&
     data.notesPlan.sourceDigest === sourceDigest
-  )
-    return data.notesPlan;
+  ) {
+    const plan = data.notesPlan;
+    if (plan.budgetRevision === NOTES_BUDGET_REVISION) return plan;
+    const units: TextUnit[] = [],
+      splitDepths = { ...plan.splitDepths };
+    let untouched: SourceItem[] = [];
+    async function flushUntouched() {
+      if (!untouched.length) return;
+      units.push(
+        ...(await groupTextSources(
+          untouched,
+          context,
+          "notes",
+          signal,
+          units.length,
+        )),
+      );
+      untouched = [];
+    }
+    for (const unit of plan.units) {
+      signal?.throwIfAborted();
+      // Keep confirmed units and the operation whose result may be ambiguous.
+      // Pack untouched consecutive work together, avoiding a tiny extra request
+      // for the tail of EVERY old batch after a prompt/schema budget change.
+      if (data.notes[unit.id] || data.failedUnitId === `notes-${unit.id}`) {
+        await flushUntouched();
+        units.push(unit);
+      } else if (plan.splitDepths?.[unit.id]) {
+        // Do not merge bounded repair children back into their oversized parent.
+        await flushUntouched();
+        const resized = await groupTextSources(
+          unit.sources,
+          context,
+          "notes",
+          signal,
+          units.length,
+        );
+        if (plan.splitDepths?.[unit.id] !== undefined)
+          for (const child of resized)
+            splitDepths[child.id] = plan.splitDepths[unit.id];
+        units.push(...resized);
+      } else untouched.push(...unit.sources);
+    }
+    await flushUntouched();
+    return {
+      ...plan,
+      units,
+      ...(Object.keys(splitDepths).length ? { splitDepths } : {}),
+      budgetRevision: NOTES_BUDGET_REVISION,
+    };
+  }
   // A deployment must not throw away confirmed old units or rename the failed
   // operation being repaired. Preserve that prefix, pack only untouched text.
   let preserved = 0;
@@ -100,5 +150,34 @@ export async function planNotes(
     signal,
     preserved,
   );
-  return { version: "bpe-v1", sourceDigest, units: [...prefix, ...packed] };
+  return {
+    version: "bpe-v1",
+    budgetRevision: NOTES_BUDGET_REVISION,
+    sourceDigest,
+    units: [...prefix, ...packed],
+  };
+}
+
+/** One bounded split after a definitive failure, not a retry-budget reset.
+ * Children have independent, persisted operation IDs; cannot split again. */
+export function splitFailedNotesUnit(
+  plan: NonNullable<ProcessingData["notesPlan"]>,
+  id: string,
+) {
+  const index = plan.units.findIndex((unit) => unit.id === id),
+    unit = plan.units[index];
+  const depth = plan.splitDepths?.[id] ?? 0;
+  if (!unit || unit.sources.length < 2 || depth >= 1) return null;
+  const middle = Math.ceil(unit.sources.length / 2);
+  const children = [
+    unit.sources.slice(0, middle),
+    unit.sources.slice(middle),
+  ].map((sources, part) => ({
+    id: unitId("repair1", index + part, sources),
+    sources,
+  }));
+  plan.splitDepths ??= {};
+  for (const child of children) plan.splitDepths[child.id] = depth + 1;
+  plan.units.splice(index, 1, ...children);
+  return { parent: unit, children };
 }

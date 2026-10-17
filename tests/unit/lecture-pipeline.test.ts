@@ -20,6 +20,7 @@ import {
 } from "../../src/lib/shared/processing";
 import { buildTextUnits } from "../../src/lib/notes/assemble";
 import { mergeTranscripts } from "../../src/lib/transcription/merge";
+import { planNotes } from "../../src/lib/notes/batching";
 function initial(file: File): LocalJob {
   const id = crypto.randomUUID(),
     now = new Date().toISOString();
@@ -105,6 +106,239 @@ const syntheticNotes = (ids: string[]): NotesOutput => ({
   glossary: [],
   uncertainties: [],
   coveredSourceIds: ids,
+});
+
+test("An exhausted fourth notes batch splits once on resume, persists children before requests and survives a pause without resending confirmed work", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    data = local.processing!;
+  const segments = mergeTranscripts(local.manifest, data.transcripts),
+    legacy = buildTextUnits(segments);
+  for (const unit of legacy.slice(0, 3))
+    data.notes[unit.id] = syntheticNotes(
+      unit.sources.map((source) => source.id),
+    );
+  data.notesPlan = await planNotes(segments, data, {
+    jobId: local.job.id,
+    title: local.title,
+    subject: local.subject,
+  });
+  const parent = data.notesPlan.units[3];
+  data.failedUnitId = `notes-${parent.id}`;
+  data.attempts[data.failedUnitId] = 2;
+  local.job.stage = "failed";
+  local.job.error = {
+    code: "NOTES_COVERAGE",
+    message: "Old combined coverage error",
+    retryAt: null,
+    recoverable: true,
+  };
+  await saveJob(local);
+  let audio = 0;
+  const calls: string[] = [],
+    controller = new AbortController();
+  const adapter: ProcessingAdapter = {
+    transcribe: async () => {
+      audio++;
+      throw new Error("Unexpected STT");
+    },
+    wait: async () => {},
+    notes: async (input) => {
+      assert.notEqual(
+        input.unitId,
+        parent.id,
+        "Do not replay the exhausted parent",
+      );
+      if (input.mode === "outline")
+        return {
+          chapters: [
+            {
+              title: "Dinamica",
+              sectionIds: input.sources.map((source) => source.id),
+            },
+          ],
+        };
+      assert(!legacy.slice(0, 3).some((unit) => unit.id === input.unitId));
+      calls.push(input.unitId);
+      const stored = (await listJobs()).find(
+        (job) => job.job.id === local.job.id,
+      )!;
+      if (input.unitId.startsWith("repair1-"))
+        assert.equal(
+          stored.processing!.notesPlan!.splitDepths![input.unitId],
+          1,
+        );
+      return syntheticNotes(input.sources.map((source) => source.id));
+    },
+  };
+  const paused = await processLecture(
+    local,
+    "synthetic",
+    controller.signal,
+    (entry) => {
+      if (
+        Object.keys(entry.processing!.notes).some((id) =>
+          id.startsWith("repair1-"),
+        )
+      )
+        controller.abort("user-pause");
+    },
+    {},
+    adapter,
+  );
+  assert.equal(paused.job.stage, "paused");
+  const completed = await processLecture(
+    paused,
+    "synthetic",
+    new AbortController().signal,
+    () => {},
+    {},
+    adapter,
+  );
+  assert.equal(completed.job.stage, "completed");
+  assert.equal(audio, 0);
+  const children = completed.processing!.notesPlan!.units.filter((unit) =>
+    unit.id.startsWith("repair1-"),
+  );
+  assert.equal(children.length, 2);
+  assert.deepEqual(
+    children.flatMap((unit) => unit.sources),
+    parent.sources,
+  );
+  assert(
+    children.every(
+      (child) => calls.filter((id) => id === child.id).length === 1,
+    ),
+  );
+  await removeJob(local.job.id);
+});
+test("Persistent real coverage failures stop after the parent and one child exhaust attempts, without recursive splitting", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    calls: { id: string; attempt: number }[] = [];
+  await saveJob(local);
+  await assert.rejects(
+    () =>
+      processLecture(
+        local,
+        "synthetic",
+        new AbortController().signal,
+        () => {},
+        {},
+        {
+          transcribe: async () => {
+            throw new Error("Unexpected STT");
+          },
+          wait: async () => {},
+          notes: async (input) => {
+            calls.push({ id: input.unitId, attempt: input.attempt });
+            throw new ClientApiError(
+              "Actual source omission",
+              502,
+              null,
+              "NOTES_COVERAGE",
+            );
+          },
+        },
+      ),
+    { code: "NOTES_COVERAGE" },
+  );
+  assert.equal(calls.length, 6);
+  assert.deepEqual(
+    calls.map((call) => call.attempt),
+    [0, 1, 2, 0, 1, 2],
+  );
+  assert.equal(new Set(calls.map((call) => call.id)).size, 2);
+  const saved = (await listJobs()).find((job) => job.job.id === local.job.id)!;
+  assert(
+    saved.processing!.notesPlan!.units.some((unit) =>
+      unit.id.startsWith("repair1-"),
+    ),
+  );
+  await removeJob(local.job.id);
+});
+test("Truncated notes split immediately instead of repeating the same output limit three times", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    calls: string[] = [];
+  let truncated = false;
+  await saveJob(local);
+  const completed = await processLecture(
+    local,
+    "synthetic",
+    new AbortController().signal,
+    () => {},
+    {},
+    {
+      transcribe: async () => {
+        throw new Error("Unexpected STT");
+      },
+      wait: async () => {},
+      notes: async (input) => {
+        if (input.mode === "outline")
+          return {
+            chapters: [
+              {
+                title: "Fisica",
+                sectionIds: input.sources.map((source) => source.id),
+              },
+            ],
+          };
+        calls.push(input.unitId);
+        if (!truncated) {
+          truncated = true;
+          throw new ClientApiError("Token limit", 502, null, "NOTES_TRUNCATED");
+        }
+        return syntheticNotes(input.sources.map((source) => source.id));
+      },
+    },
+  );
+  assert.equal(completed.job.stage, "completed");
+  assert.equal(calls.filter((id) => id === calls[0]).length, 1);
+  assert.equal(calls.filter((id) => id.startsWith("repair1-")).length, 2);
+  await removeJob(local.job.id);
+});
+test("An ambiguous notes response retrieves the same operation and never splits or advances its attempt", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    calls: { id: string; attempt: number }[] = [];
+  await saveJob(local);
+  await assert.rejects(
+    () =>
+      processLecture(
+        local,
+        "synthetic",
+        new AbortController().signal,
+        () => {},
+        {},
+        {
+          transcribe: async () => {
+            throw new Error("Unexpected STT");
+          },
+          wait: async () => {},
+          notes: async (input) => {
+            calls.push({ id: input.unitId, attempt: input.attempt });
+            throw new ClientApiError(
+              "Unknown result",
+              409,
+              null,
+              "RESULT_UNCERTAIN",
+            );
+          },
+        },
+      ),
+    { code: "RESULT_UNCERTAIN" },
+  );
+  assert.equal(calls.length, 4);
+  assert.equal(new Set(calls.map((call) => call.id)).size, 1);
+  assert(calls.every((call) => call.attempt === 0));
+  const saved = (await listJobs()).find((job) => job.job.id === local.job.id)!;
+  assert.equal(saved.processing!.notesPlan!.splitDepths, undefined);
+  await removeJob(local.job.id);
 });
 test("A failed 70-minute job resumes after two quota waits and invalid notes without resending its 33 transcripts or two saved notes", async (t) => {
   t.mock.method(console, "info", () => {});

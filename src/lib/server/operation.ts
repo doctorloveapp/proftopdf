@@ -4,6 +4,8 @@ import { cacheResult, readCachedResult } from "./result-cache";
 import { reserveQuota, settleQuota, operationFingerprint } from "./quota";
 import { RouteError } from "./http-core";
 import { performOperation } from "./operation-core";
+import { getServerConfig } from "./config";
+import { notesProviderError } from "./notes-provider-error";
 import type { Session } from "./auth";
 
 export const ownerKey = (session: Session) =>
@@ -54,6 +56,14 @@ export async function runAiOperation<T>(
     {
       read: () => readCachedResult(kind, id, owner, fingerprint),
       reserve: async () => {
+        // Cache replay precedes this guard, so a deployment changing the token
+        // estimate cannot block retrieval of an already completed operation.
+        if (kind === "notes" && cost > getServerConfig().LLM_TOKENS_PER_MINUTE)
+          throw new RouteError(
+            413,
+            "TOKEN_BUDGET",
+            "Questa unità supera il budget gratuito. Riprendi con unità di testo più piccole.",
+          );
         if (await getRedis().get(`${index}:deleted`))
           throw new RouteError(
             410,
@@ -116,6 +126,8 @@ export async function runAiOperation<T>(
             new Date(until).toISOString(),
           );
         }
+        const notesFailure = notesProviderError(kind, error);
+        if (notesFailure) return notesFailure;
         if ([400, 413, 415, 422].includes(status ?? 0))
           return new RouteError(
             422,
