@@ -4,26 +4,27 @@
 
 ProfToPdf is a mobile-first web application with an Italian interface. It prepares audio on the device, transcribes small segments through **Groq Whisper Free**, generates notes and an outline through **OpenAI's native API**, and creates a searchable A4 PDF locally. The approved deployment uses **Vercel Hobby and Upstash Redis Free**, a funded OpenAI account for the primary language model, and two strictly free fallback providers. OpenAI usage is paid and explicitly authorized by the repository owner; this architecture replaces the original entirely free notes workflow.
 
-**Status:** private beta. On Samsung S26 / Chrome, a fresh **70m52s production recording** completed transcription, nine notes batches and the outline in v7 without quota waits, retries or fallback. Cumulative activity through the subsequent PDF failure was **8m36s**; tracked native OpenAI cost was **$0.016457**, with the owner reporting about two cents in the account dashboard. PDF export failed because the text font lacked mathematical script `𝓏` (U+1D4CF). Revision **v8** adds a local mathematical fallback font, verified on the actual worker bundle and a rendered synthetic 13-page PDF. The long production PDF, fidelity review and Apple devices still require acceptance testing.
+**Status:** private beta. A fresh **70m52s Samsung S26 / Chrome production lesson** completed all AI work in **8m36s** of recorded activity with **$0.016457** native OpenAI cost and no quota waits, retries or fallback. The owner subsequently exported its 16-page PDF after the font fix. Revision **v10** adds conditional Groq-first fallback, multiple recordings per lesson, and heading pagination alongside local mathematical typesetting. Local checks pass; the new multi-audio workflow, deployed failover and Apple acceptance still need device testing.
 
 ## Capabilities
 
-- Audio selection from the phone or tablet, with drag-and-drop on supported devices.
+- Multiple audio recordings per lesson, with date/name sorting, manual ordering, individual removal and total duration. Drag-and-drop is supported where the browser provides it.
 - A lesson library, editable title, optional subject, and daily quota bars separating used and reserved capacity.
 - Local audio preparation, progress by phase, quota countdowns, pause/resume, and IndexedDB persistence.
 - Screen Wake Lock during foreground processing and PDF generation, with clear fallback messages and automatic release on pause.
 - Timestamped transcript export, structured notes, Markdown editing, chapters, key concepts and a glossary.
 - Selectable PDF text, embedded local fonts, page numbers, a contents list, and support for accents and polytonic Greek glyphs.
+- Local LaTeX mathematical typesetting for fractions, indices, integrals, vectors and matrices; adaptive spacing and headings kept with following text prevent orphan titles.
 - Android installation prompt when available; contextual Safari installation instructions shown only on request.
 - Confirmed lesson deletion, diagnostic JSON export, and cumulative processing times next to the PDF download.
 
-The application accepts files up to **120 MB / 120 minutes**. These are enforced limits, not a claim that every device and codec combination has passed a two-hour test.
+The application accepts up to **50 recordings totalling 120 MB / 120 minutes per lesson**. These are enforced limits, not a claim that every device and codec combination has passed a two-hour test.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Audio file on device] --> B[Local preparation]
+    A[Ordered audio files on device] --> B[Local segments and virtual timeline]
     B --> C[IndexedDB: segments and progress]
     C --> D[Vercel: one small audio request]
     D <--> Q[Upstash: session, atomic quotas, short cache]
@@ -33,8 +34,8 @@ flowchart LR
     G --> H[Vercel: one notes or outline request]
     H <--> Q
     H --> I[OpenAI: GPT-6 Luna]
-    I -. definitive failure .-> O[OpenRouter: Dots Free]
-    O -. definitive failure .-> R[Groq: GPT-OSS Free]
+    I -. definitive failure .-> R[Groq: GPT-OSS Free]
+    R -. wait over 15 min or definitive service failure .-> O[OpenRouter: Dots Free]
     I --> J[Local editable document]
     O --> J
     R --> J
@@ -43,19 +44,19 @@ flowchart LR
 
 The **original recording never passes through a Vercel Function**. The browser sends independently decodable segments below 3,200,000 bytes; the server validates their actual format and duration before reserving quota. This stays below Vercel's [4.5 MB Function payload limit](https://vercel.com/docs/functions/limitations) without introducing remote audio storage.
 
-The browser runs a sequential queue. Each Function handles one segment or text unit. Short quota waits happen on the device after the Function returns; waits longer than two minutes save the checkpoint and pause for later manual resumption; no background server process is kept alive for the duration of a lecture.
+The browser runs a sequential queue. Each Function handles one segment or text unit. Quota waits happen on the device after the Function returns. Speech waits beyond two minutes save and pause; notes waits up to fifteen minutes resume automatically while visible, and longer waits save and pause if no alternative is available; no background server process is kept alive for the duration of a lecture.
 
-| Component                 | Implementation                                                                              |
-| ------------------------- | ------------------------------------------------------------------------------------------- |
-| Application               | Next.js App Router, React, TypeScript, Tailwind CSS                                         |
-| MP3 / PCM WAV preparation | Incremental TypeScript parsing; no FFmpeg download for standard supported files             |
-| Other audio formats       | FFmpeg.wasm, single-thread worker, WORKERFS; remux or bounded per-segment conversion        |
-| Speech recognition        | `whisper-large-v3-turbo`; explicit `whisper-large-v3` recovery                              |
-| Notes and outline         | Native `gpt-6-luna` → `dots-studio/dots-3-note-preview:free` → Groq `openai/gpt-oss-120b`   |
-| Token budgeting           | Local `js-tiktoken`, o200k ranks, conservative framing margin and full completion allowance |
-| Persistence               | IndexedDB for lessons and text; localStorage for bounded diagnostics                        |
-| Coordination              | Upstash Redis, atomic Lua reservations and local cross-tab leases                           |
-| PDF                       | PDF-LIB and fontkit in a terminable worker; Noto Sans plus on-demand Noto Sans Math         |
+| Component                 | Implementation                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Application               | Next.js App Router, React, TypeScript, Tailwind CSS                                                     |
+| MP3 / PCM WAV preparation | Incremental TypeScript parsing; no FFmpeg download for standard supported files                         |
+| Other audio formats       | FFmpeg.wasm, single-thread worker, WORKERFS; remux or bounded per-segment conversion                    |
+| Speech recognition        | `whisper-large-v3-turbo`; explicit `whisper-large-v3` recovery                                          |
+| Notes and outline         | Native `gpt-6-luna` -> Groq `openai/gpt-oss-120b` -> conditional `dots-studio/dots-3-note-preview:free` |
+| Token budgeting           | Local `js-tiktoken`, o200k ranks, conservative framing margin and full completion allowance             |
+| Persistence               | IndexedDB for lessons and text; localStorage for bounded diagnostics                                    |
+| Coordination              | Upstash Redis, atomic Lua reservations and local cross-tab leases                                       |
+| PDF                       | PDF-LIB and fontkit in a terminable worker; Noto Sans plus on-demand Noto Sans Math                     |
 
 ## Provider routing and operating budgets
 
@@ -63,7 +64,13 @@ Only the native OpenAI primary incurs model charges. Keep Groq, OpenRouter and i
 
 OpenAI uses the official `openai` SDK and Responses API with `model: "gpt-6-luna"`, `reasoning: { mode: "standard", effort: "medium" }`, strict JSON Schema and `store: false`. All three providers share the same prompt, schema and content validator. Output allowances include reasoning tokens: up to 12,000 for a 30-source native notes batch and 6,000 for the outline. See the official [GPT-6 Luna model](https://developers.openai.com/api/docs/models/gpt-6-luna) and [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
 
-The router persists its position and at most one upstream call per Function invocation. Received authentication, credit, rate-limit and service errors advance to the next provider. An HTTP 202 tells the client to continue the **same logical operation and attempt**, transparently. Local quota denials skip unavailable providers without starting inference. Lost responses/timeouts remain ambiguous: they retrieve the same operation and **do not silently send paid work twice**. Invalid content follows bounded repair, rather than provider hopping. Three rounds of actual rejected inference bound a logical attempt; purely local denials do not burn rounds.
+The router persists its provider and at most one upstream call per Function invocation. The priority is **OpenAI -> Groq -> OpenRouter**:
+
+- Received OpenAI credit, authentication, rate-limit or service failures advance to Groq.
+- A Groq quota/cooldown wait of **60-90 seconds, or any wait up to exactly 900 seconds**, stays with Groq. The client displays a countdown; no Function sleeps. Local quota denial starts no inference and consumes no retry leg. A received Groq 429 is cached; the next safe retry gets a new Groq leg without returning to paid OpenAI.
+- OpenRouter is used **only if Groq's estimated wait is greater than 900 seconds**, or Groq returns a definitive service/authentication/model-access failure or is unconfigured. This includes a received HTTP 5xx response; an unknown outcome or network timeout still requires recovery rather than automatic duplication.
+
+HTTP 202 continues the **same logical operation and attempt** after rerouting. All providers use one schema and validator. Invalid content follows bounded repair. Three full rounds of rejected cascading bound an operation; Groq minute-level quota waits stay at Groq instead of consuming full cascade rounds. Operation/cache IDs remain stable across this policy change, including pending legacy operations. The new policy has its own persisted version; a previous notes-only wait is reassessed once, retaining batch IDs, attempts and confirmed text. STT waits and shared counters are retained.
 
 The application defaults are independent for each provider:
 
@@ -82,7 +89,7 @@ The remaining quota must cover the **whole next reservation**, not merely be gre
 
 Atomic reservations use Redis TIME and are reconciled against confirmed provider usage. Text reservations count prompt and schema tokens, add 20% plus 512 tokens for framing/provider differences, and include the full completion budget. Native cost accounting uses the published Standard prices: **$0.10/M input, $0.01/M cached input, $0.50/M output**, including output reasoning. Charges are estimated from returned usage, not invoiced amounts. A definitive pre-generation rejection releases the OpenAI monetary reservation; an attempted OpenRouter request still counts as a request. Unverified usage and ambiguous failures retain reservations. SDK retries are disabled.
 
-New native/OpenRouter notes batches allow **30 sources and a JSON body below 60 KB**, with a server limit of 64 KB. They do not inherit Groq's 6,000 TPM restriction or minute-long pacing. If a large unit reaches Groq, the router requests rebatching **before inference**; the browser persists smaller units targeting a **5,500-token** reservation and a body below 14 KB. Confirmed and ambiguous units retain their identities. Older clients keep their previous route contract until refreshed; do not lower a custom minute allowance without checking that a single fallback unit fits.
+New native/OpenRouter notes batches allow **30 sources and a JSON body below 60 KB**, with a server limit of 64 KB. They do not inherit Groq's 6,000 TPM restriction or minute-long pacing. If a large unit reaches Groq, the router first checks cooldown and the quota for a feasible small request, without reserving tokens. A prolonged block routes the intact large unit to OpenRouter; otherwise it requests rebatching **before inference**; the browser persists smaller units targeting a **5,500-token** reservation and a body below 14 KB. Confirmed and ambiguous units retain their identities. The wire contract stays stable while the server migrates policy state; reload to obtain the multi-audio interface. Do not lower a custom minute allowance without checking that a single fallback unit fits.
 
 Upstash Free currently advertises 250 MB and 500,000 commands/month. The bounded response cache holds at most 500 results of up to 48 KB, with a 15-minute TTL; Redis stores no audio. Monitor [Upstash usage](https://upstash.com/pricing/redis) and [Vercel Hobby usage](https://vercel.com/docs/plans/hobby) separately. Monthly infrastructure capacity is not represented fully by the application's daily AI bars. Hobby is intended for personal, non-commercial use.
 
@@ -108,7 +115,7 @@ Requirements: **Node.js 22.x**, npm, Vercel Hobby with Fluid Compute enabled, Gr
 | --------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `GROQ_API_KEY`                                                  | Private Groq credential                                                    |
 | `OPENAI_API_KEY`                                                | Private native OpenAI credential; primary paid notes/outline               |
-| `OPENROUTER_API_KEY`                                            | Private credential for the strictly free first fallback                    |
+| `OPENROUTER_API_KEY`                                            | Private credential for the strictly free prolonged-block fallback          |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`            | Private Redis connection                                                   |
 | `SESSION_SECRET`                                                | Session signature secret, minimum 32 characters                            |
 | `APP_ACCESS_PASSWORD`                                           | Shared invitation password, minimum 8 characters                           |
@@ -128,16 +135,30 @@ The mathematical fallback is **`public/fonts/NotoSansMath-Regular.ttf`**, served
 
 Font provenance: [Google Fonts source, pinned revision](https://github.com/google/fonts/tree/dbd1ab6e65dc59bcda3ca8de9fd372f58f98e0af/ofl/notosansmath), SIL OFL 1.1; 1,015,396 bytes, SHA-256 `3f495fe933c06786e4d5f6d86b8ee70b6753a68ee3b9d87528726de0f6e2c47d`. This adds a font asset, not an external runtime service.
 
+Mathematics uses **MathJax 3.2.2**, pinned for its self-contained SVG output, with the base and AMS packages. The worker loads its local math chunk only when a delimited expression is present. TeX is protected before Markdown processing, composed into vector paths and fraction bars, and positioned using its real height/depth. Both inline `\(...\)` / `$...$` and display `\[...\]` / `$$...$$` are supported, with safeguards for literal prices. Original notes/Markdown are preserved. Compatible PDF readers can copy the original LaTeX source through `ActualText`; prose remains ordinary searchable text. A copied formula may therefore contain TeX source even though the visible PDF shows the composed equation.
+
+There is no remote rendering, HTML execution, package autoloading or additional API cost. Bounds cover expression size/count, macro expansion, path count and page dimensions; malformed or unsupported notation produces a specific PDF error. New-model prompts request the same supported notation. This is a mathematical subset rather than a complete LaTeX document compiler. See [MathJax SVG output](https://docs.mathjax.org/en/v3.2/options/output/svg.html) and [TeX processor options](https://docs.mathjax.org/en/v3.2/options/input/tex.html). Commit `package.json`, `package-lock.json`, source changes and the build script; generated `public/pdf/` chunks remain ignored and are rebuilt on Vercel.
+
 On Windows, use `npm.cmd` if PowerShell blocks `npm.ps1`. This workspace follows **Direct-to-Cloud**: local compilation/checks, owner-managed commit/push, then browser testing on the deployed HTTPS origin. Only the repository owner runs Git commands; agents do not start local preview servers.
 
 ## Using ProfToPdf
 
-1. Sign in and choose **Nuova lezione** from **Le tue lezioni**. Select a recording, enter a useful title, optionally choose or type a subject, and press **Prepara la lezione**.
+1. Sign in and choose **Nuova lezione** from **Le tue lezioni**. Select one or more recordings, check their sequence, enter a useful title, optionally choose or type a subject, and press **Prepara la lezione**.
 2. When segmentation finishes, press **Trascrivi e crea il Pdf**. Keep the application visible. Where supported, the screen stays awake automatically. Progress and quota waits appear in the processing panel; confirmed results are saved after every unit.
 3. Review the transcript and notes. Edit the Markdown if needed, save it, and press **Prepara PDF**. Download or open the generated file in the device's PDF viewer.
 4. Export important material before deleting a lesson or clearing browser storage. Deletion requires confirmation and interrupts local processing; an already submitted provider request can still consume quota.
 
 The first PDF line contains **Subject - dd/mm/yyyy**, followed by the lesson title on the next line. The filename uses `Subject - Title - dd-mm-yyyy.pdf`, omitting an empty subject. Slashes are replaced with hyphens for filesystem compatibility. Dates use Europe/Rome. PDF regeneration requires confirmation when an earlier export is recorded; changing saved notes permits a new version.
+
+### Multiple recordings and virtual timeline
+
+Files initially sort by **`lastModified` ascending**, then natural filename order (`part2` before `part10`). This is the modification date supplied by the operating system, not a guaranteed original recording/creation date. Each row shows its sequence, filename, duration and date, with accessible up/down and remove controls. Correct the order before preparation; the total updates immediately. For codecs whose metadata the browser cannot read, duration is labelled pending verification and resolved by the preparation engine.
+
+The browser checks the ordered originals and total duration, then segments **one recording at a time**. It never combines the original files into a large buffer. A second recording begins at the first recording's duration, the third at the sum of the first two, and so on. Global chunk indices and shifted timestamps feed the unchanged Whisper endpoint and one continuous notes plan, outline and PDF. Decoder overlap is retained within a recording; unrelated parts have no overlap and no boundary text deduplication. Intervals during which nobody recorded are not inserted as artificial silence.
+
+Original checksums, part durations/offsets and global chunks are checkpointed in IndexedDB. Optional `manifest.sources` and `chunk.sourcePartIndex` extend version 1 without a database migration; old one-file lessons keep their original fingerprint and remain valid. Resume missing audio by selecting **all originals in the saved order**. Changed OS dates/names do not invalidate matching ordered content. After segments are present, no original reselection is needed. A checkpoint includes part metadata and boundaries, not audio or notes. The preflight and preparation use at most one audio engine at a time; compressed fallback formats may require reopening that engine after metadata validation.
+
+Headings are measured with their actual wrapped lines and mathematical heights. A title that would occupy the last two body lines moves to the next page with following text, leaving whitespace. Consecutive headings and the paragraph widow rule are handled together. Existing lessons can regenerate just the PDF, without repeating paid AI work. `pdf.layout.complete` reports the page count and the number of headings moved.
 
 Android installation uses the native browser prompt when it becomes available. Safari instructions open after tapping **Installa ProfToPdf**. Installed/standalone detection hides the control; Safari's manual **Ho aggiunto l’app alla Home** confirmation handles the normal-tab detection limitation. Installation does not enable offline AI or background processing. Apple may keep the installed app's storage separate from Safari.
 
@@ -153,7 +174,7 @@ After exhausted coverage/JSON attempts, or immediately for a truncated/oversized
 
 Network ambiguity follows a different path: the application retrieves the **same operation** rather than silently launching another inference. If the result remains unavailable, a new attempt requires an explicit user action. The 15-minute cache and idempotency controls do not provide an unconditional exactly-once guarantee after lost responses or cache expiry.
 
-Quota waits up to two minutes resume automatically while the screen lock remains active. Longer waits checkpoint the job, show the retry date/time and pause; the screen lock is released and the app can be closed. Sign in again if needed and resume on the same device/browser after capacity returns. This does not refund earlier consumption or guarantee capacity if another request uses it first.
+Speech quota waits up to two minutes resume automatically. Notes waits up to fifteen minutes resume automatically while visible; a longer Groq wait triggers OpenRouter first. If the cascade still cannot proceed, longer waits checkpoint the job, show the retry date/time and pause; the screen lock is released and the app can be closed. Sign in again if needed and resume on the same device/browser after capacity returns. This does not refund earlier consumption or guarantee capacity if another request uses it first.
 
 [Screen Wake Lock](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API) requires HTTPS and a visible active page. The app requests it during audio/AI work and PDF rendering, releases it on stop/cleanup, and reacquires it on return to visibility when work is still active. Feature detection, rejection and OS revocation are logged. Power saving, low battery and operating-system policies may deny or revoke it; manual locking or switching apps can still suspend processing. The UI reports when the lock is unavailable.
 
@@ -165,7 +186,7 @@ The exported **checkpoint contains audio metadata only**. It does not contain au
 
 **Scarica log diagnostico** exports a JSON report containing client revision, browser/device details, technical progress events, quota waits, error codes and safe validation diagnostics. For example, an invalid field can identify `sections.0.paragraphs` and the expected type without copying the model's response. Coverage failures report separate counts and numeric paths for missing sources, empty citation lists and unknown references; unexpected ID values are excluded. `notes.split` records bounded recovery, and `notes.saved` includes source/uncertainty counts. `inference.usage` records reserved and confirmed token counts; quota errors identify the blocking window and required/residual capacity. `quota.long-pause` records a saved long wait; `wake.*` events record lock acquisition, denial and release.
 
-Logs exclude credentials, cookies, recording contents, transcript text, titles and filenames. They are never uploaded automatically. Retention is five lessons and 200 events per lesson, with an additional size bound; `droppedEvents` records trimming. The current client revision is **`pdf-math-font-2026-10-17-v8`**. Console events use `[ProfToPdf audio]`. `llm.reroute` identifies the next provider, `notes.rebatch` records Groq-compatible replanning, and `inference.usage` includes the provider path and calculated cost in micro-USD. PDF diagnostics add `pdf.font.loading` and `pdf.font.fallback`, with the font name, unique character count and at most 12 Unicode code points, never text excerpts.
+Logs exclude credentials, cookies, recording contents, transcript text, titles and filenames. They are never uploaded automatically. Retention is five lessons and 200 events per lesson, with an additional size bound; `droppedEvents` records trimming. The current client revision is **`multi-audio-groq-first-2026-10-17-v10`**. Console events use `[ProfToPdf audio]`. `llm.reroute` identifies the next provider, `notes.rebatch` records Groq-compatible replanning, and `inference.usage` includes the provider path and calculated cost in micro-USD. PDF diagnostics add `pdf.font.loading` / `pdf.font.fallback` with font name and bounded Unicode counts, plus `pdf.math.loading` / `pdf.math.complete` with expression/cache/vector counts. `timeline.part.start` / `timeline.part.complete` record part indices and cumulative offsets without filenames. `pdf.layout.complete` records page and moved-heading counts. Mathematical errors expose a safe cause or expression ordinal, never the formula or raw library error.
 
 Exports also contain `aiUsageSummary`: `confirmedTokens`, `reservedUnverifiedTokens`, `trackedOperations` and `historyComplete`, plus `confirmedCostUsd`, `costHistoryComplete` and a provider breakdown when available. Each logical operation retains its provider legs, including verified failed-generation usage. Known fallback consumption remains visible even if an earlier leg is uncertain. The per-operation ledger lives with the IndexedDB lesson and survives event trimming; cache replay of the same operation/attempt does not count twice. Old lessons are explicitly marked as incomplete history because earlier usage and costs cannot be reconstructed reliably.
 
@@ -187,25 +208,22 @@ This example illustrates the format, not a 70-minute performance promise. Totals
 
 ## Validation
 
-As of **17 October 2026**, the automated suite contains **106 passing tests**. Regressions cover transparent cascading, free-only request policy, ambiguous responses, zero-cost rejected generations, bounded retries, provider usage, larger batches and Groq rebatching, migration of a saved 12-hour notes pause without repeating STT, source coverage, storage, session, audio, PDF and Screen Wake Lock. PDF coverage includes lazy font loading, supplementary-plane math in bold/mixed text and multi-page headers, unchanged saved content, explicit unsupported characters and worker progress messages that must not terminate rendering.
+As of **17 October 2026**, **128 local automated tests** pass, along with TypeScript/configuration/credential checks and the production build. Coverage includes the strict 15-minute boundary, persistence after a Groq 429, safe policy migration, ordering and offsets, multi-file preparation/resume and checkpoints, repeated speech across part boundaries, one continuous transcript/notes/outline, legacy single-file jobs, and PDF pagination with three-line paragraphs, consecutive/wrapped headings and tall equations. Tests do not call inference providers.
 
-| Evidence                                | Verified                                                                                                                                                                                  | Still required                                                                     |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Samsung S26 / Chrome, production        | Fresh v7 70m52s: 33 transcripts, nine notes batches plus outline, 61,072 LLM tokens, $0.016457 tracked, no waits/retries/fallback; PDF failed on U+1D4CF after 8m36s activity             | v8 export of the saved long document and fidelity review                           |
-| Local checks                            | Unit tests, TypeScript/configuration/credential checks, production compilation                                                                                                            | Mobile runtime behavior                                                            |
-| Native OpenAI discovery/probe           | Exact `gpt-6-luna`; Standard/Medium reasoning; strict schema; two synthetic sources; 6.7s, 1,026 tokens, estimated $0.000278                                                              | Long lecture and academic fidelity; not an audio/browser test                      |
-| Native OpenAI + Redis route integration | 30 synthetic sources, one uncertain: 28.5s; eight-title outline: 3.2s; identical replay with no quota charge; two calls, estimated $0.002793                                              | Production transport/mobile and actual full-lesson time                            |
-| Redis concurrency                       | 12 simultaneous claims, one winner; persisted routing, changed-fingerprint rejection, started lease remains blocked after expiry, deletion tombstone                                      | Real multi-tab acceptance                                                          |
-| Free fallback evidence                  | Prior Dots discovery/probes with strict schema and denied data collection; prior Groq source/outline integrations; local three-provider failure simulations                               | End-to-end production failover during a long lesson; no intentional outage imposed |
-| PDF worker                              | v8 actual browser bundle run locally without browser/server; 13 rendered pages inspected; U+1D4CF, 14 other math characters, polytonic Greek and superscripts preserved in extracted text | Actual long PDF; Apple download/opening                                            |
-| Apple devices                           | Implementation and non-browser checks                                                                                                                                                     | Safari, M4A/AAC, install, wake lock, suspension, reload and downloads              |
-| Capacity                                | New synthetic 70-minute native plan: nine notes calls + one outline over 250 sources; no mandatory minute pauses                                                                          | Real 70-minute completion, two-hour/90 MB devices and monthly hosting/Redis usage  |
+| Evidence                                | Verified                                                                                                                                                  | Still required                                                                                                                   |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Samsung S26 / Chrome production         | 70m52s; 33 transcripts, nine notes calls and one outline; 61,072 LLM tokens; $0.016457; 8m36s recorded activity; later 16-page PDF export                 | New v10 multi-audio and PDF export on device; full academic fidelity review                                                      |
+| Provider discovery and synthetic probes | Previously confirmed native Luna strict schema/reasoning, Dots free schema/routing and Groq integrations                                                  | These probes are text samples, not new multi-audio device tests                                                                  |
+| Redis integration, v10                  | 12 concurrent claims, one winner; Groq short-wait provider/leg survives release; fingerprint conflict, expired started lock and deletion remain protected | Real multi-tab and deployed fallback acceptance                                                                                  |
+| Multi-audio local integration           | Sequential WAV preparation, pause/resume, offsets, checkpoints, one transcript/notes plan/outline/document and replay without new calls                   | Mobile mixed-codec recordings and long multi-audio lesson                                                                        |
+| PDF worker, v10                         | Actual generated worker: orphan-heading fixture, full 13-page layout, and all 36 formulas extracted from the real PDF                                     | Regeneration of the full saved production document; Apple export/opening                                                         |
+| Apple / capacity                        | Implementation and local checks                                                                                                                           | Safari/iPad installation, wake lock, M4A/AAC, suspension, storage, downloads; two-hour/90 MB and monthly infrastructure capacity |
 
-For **70 minutes of audio**, the new local benchmark models 5,600–9,800 words across 250 speech sources: **nine native notes calls plus one outline**. Combining earlier preparation/STT observations (230s), the new synthetic 30-source latency (28.5s per notes call, 3.2s outline), and a 12s PDF allowance gives **8.4 minutes**. A slower 60s notes / 15s outline scenario gives **13.3 minutes**. A planning range is therefore **8–15 minutes including pauses, with zero quota pause assumed for the funded primary and sufficient application/provider capacity**. This is an extrapolation, not a completed 70-minute test or a guarantee. Free fallback, retries, output growth, pre-used quota or mobile suspension can exceed it and can still exceed 30 minutes.
+The real long-test log measured **47.2s preparation, 466.2s transcription/notes and 2.1s for the initial PDF attempt**, totalling **515.5s / 8m36s** active work. The first export failed on a font glyph; the later PDF was successfully supplied by the owner, but its export duration is absent from that earlier log. No quota pauses occurred. Manual gaps between buttons are excluded; calendar time to the initial export attempt was approximately 9m11s.
 
-The same benchmark reserves approximately **$0.061** for one successful native pass, using maximum output/reasoning allowances. Actual usage should usually be lower; a provisional expectation is **$0.02–$0.06 per 70-minute lesson**, before tax/currency conversion and excluding retries. The measured 30-source synthetic notes plus outline cost was $0.002793; source density and output length vary. No external key's consumption or account balance is inferred from the application counters.
+The earlier synthetic planning range of **8-15 minutes** for 70 minutes of audio is consistent with this one real AI run, assuming sufficient funded primary capacity and no quota waits. It is not a guarantee for every recording/device. Multi-file preflight, PDF mathematics and mobile runtime need new measurements. Free fallback can still exceed 30 minutes if both providers lack capacity. No additional AI calls or charges were incurred for v10 checks.
 
-The first fresh production 70m52s test now supplies real evidence: **47.2s audio preparation, 466.2s transcription/notes, and 2.1s for the failed PDF attempt**, totaling **515.5s / 8m36s** active work. Within processing, the STT phase took about 239.5s and notes/planning/outline about 226.7s. There were no quota pauses or content repairs; all ten LLM calls used native OpenAI. This validates the order of magnitude of the timing estimate, **not a completed PDF workflow**. Manual gaps between buttons are excluded; actual elapsed time from preparation start to the failed export was about 9m11s. The completed long PDF still needs v8 production verification.
+The measured native cost was **below $0.02** for that lesson. A conservative planning allowance from the earlier synthetic maximum-output benchmark remains **$0.02-$0.06 per 70-minute lesson**, before tax/currency conversion and excluding retries; that benchmark reserved around $0.061. Actual content, reasoning and output length vary. Application budget bars do not infer an account balance or costs incurred by other clients.
 
 Useful commands:
 
@@ -231,8 +249,9 @@ Cloud checks require a configured private `.env`. Do not repeatedly consume quot
 ## Production acceptance checks
 
 1. Deploy the revision, reload the HTTPS application, sign in and inspect remaining quotas. After starting/resuming processing, confirm the new diagnostic revision above; a previously exported log retains its older revision.
-   For the v7 U+1D4CF failure, open the **existing completed lesson and click only “Prepara PDF”**. Transcripts, notes and outline are already saved: there is no need to rerun paid generation or re-upload the audio. Confirm the v8 log, math-font fallback event, successful download and the original symbol in the PDF. Keep browser storage intact.
-2. **Resume the existing long lesson first.** Reload before resuming. The new routing revision reassesses an old notes-only quota wait against the funded primary once, without clearing Groq counters or speech waits. The 33 saved transcripts and confirmed notes are reused; only untouched/quota-denied work is repacked. Legacy ambiguous operations first retrieve the old cache and remain protected if unavailable. Confirm `wake.held` (or a specific fallback), native `inference.usage`, successful PDF download and the exported log. Do not clear browser storage.
+   For the v7 U+1D4CF failure, open the **existing completed lesson and click only “Prepara PDF”**. Transcripts, notes and outline are already saved: there is no need to rerun paid generation or re-upload the audio. Confirm the current log revision, math-font fallback event, successful download and the original symbol in the PDF. Keep browser storage intact.
+   For the v8 raw-LaTeX and orphan-heading cases, use the same lesson and **Prepara PDF** again, confirming the existing regeneration dialog. Confirm the **v10** log, `pdf.math.complete`, visibly composed fractions/scripts/integrals, headings kept with following text, preserved text and successful download. No new audio or OpenAI request is needed. Do not infer a failed conversion merely because copying an equation returns its structured LaTeX source.
+2. **Test the new multi-audio path.** Create a lesson with two or three short recordings, including one MP3/WAV and one supported phone codec. Verify dates, natural filename ordering, duration and total; move and remove parts before starting. Confirm continuous timestamps at the joins, one outline/PDF, pause/reload/resume, and an old single-file lesson still working. A longer multi-part test follows after the short case succeeds.
 3. For a separate full-duration measurement, create a **new lesson from the original recording** with sufficient speech and native budgets. Avoid manual pauses, export the log, verify provider usage/cost and compare the full transcript/PDF to the source. The resumed job's cumulative time includes earlier failures and incomplete historical accounting; it is not a fresh speed benchmark.
 4. Test pause/reload/resume, loss of network, short automatic quota waits, long saved quota pauses, wake-lock release on pause/completion, two-tab ownership and deletion during active work. Deleted lessons must not return after a late response.
 5. On iPhone/iPad, test Safari and installation separately with a short M4A first, then the long recording. Check file selection, WASM loading, background suspension, local storage and PDF download/opening.
@@ -244,13 +263,13 @@ Cloud checks require a configured private `.env`. Do not repeatedly consume quot
 - Free capacity is finite and shared. A two-hour recording exceeds the application's conservative hourly speech allowance before overlap, so an hour-scale quota wait is possible even from an initially unused account. No fixed completion time is guaranteed.
 - The primary is paid; application budgets limit tracked usage rather than guaranteeing an invoice cap across other clients. The free cascade provides a recovery path, not unlimited capacity. Dots is a preview model with a published retirement date of **31 December 2026**; revalidate availability and quality before then. Its synthetic probes showed occasional repetition and language/math formatting issues, so review academic output, especially multilingual material.
 - New lessons use automatic speech-language detection and language-preserving notes prompts. Existing Italian-only jobs retain their original recognition settings for safe replay. Ancient Greek and school Latin recognition are not guaranteed; notes cannot reliably repair words already transcribed incorrectly.
-- Mathematical expressions are retained as text. The PDF renderer does not typeset LaTeX or interpret remote HTML/resources. An unsupported glyph produces an explicit error.
+- Standard delimited TeX mathematics is typeset locally; arbitrary LaTeX documents, custom macros, remote resources and HTML are unsupported. Oversized or invalid equations produce explicit PDF errors rather than clipped or silently altered content. A symbol absent from all text fonts remains an explicit glyph error.
 - The library belongs to the browser profile, not a cloud account. There is no cross-device sync, complete checkpoint backup, public registration or reliable closed-page processing.
 - Apple acceptance, long-document fidelity, two-hour capacity and the latest production smoke test remain release work. Public access would also require a deliberate capacity and account-management design.
 
 ## Privacy and security
 
-Audio segments go to Groq; text batches go to native OpenAI and, on definitive failure, may go to OpenRouter and its selected free inference provider, then Groq. This begins only after the user starts processing. Original files, saved lessons and PDFs remain on the device; small results are cached briefly in Redis for response recovery. `store: false` disables OpenAI response storage, but is not a zero-retention agreement; OpenRouter's denied data-collection routing is not a universal retention guarantee. Review [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data), [OpenRouter provider routing](https://openrouter.ai/docs/features/provider-routing) and [Groq data handling](https://console.groq.com/docs/your-data). Local deletion does not assert deletion of provider-side records.
+Audio segments go to Groq; text batches go to native OpenAI, then Groq on a definitive primary failure, and to OpenRouter and its selected free inference provider only for a prolonged Groq block or definitive service failure. This begins only after the user starts processing. Original files, saved lessons and PDFs remain on the device; small results are cached briefly in Redis for response recovery. `store: false` disables OpenAI response storage, but is not a zero-retention agreement; OpenRouter's denied data-collection routing is not a universal retention guarantee. Review [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data), [OpenRouter provider routing](https://openrouter.ai/docs/features/provider-routing) and [Groq data handling](https://console.groq.com/docs/your-data). Local deletion does not assert deletion of provider-side records.
 
 Sessions use a signed, revocable `__Host-` cookie with Secure, HttpOnly and SameSite=Strict, an eight-hour absolute lifetime, exact Origin checks and CSRF protection for mutations. Login and inference routes are rate-limited. Shared counters fail closed if Redis is unavailable. The service worker is network-only and does not cache private pages, API responses or recordings.
 
@@ -262,7 +281,7 @@ Never commit `.env` variants, credentials, private recordings or diagnostic repo
 config/environment.example   Safe environment template
 src/app/api/                  Session, quota, transcription, notes and cleanup routes
 src/components/               Library, upload, installation, quota and document UI
-src/lib/audio/                Incremental parsers, FFmpeg bridge, diagnostics and timing
+src/lib/audio/                Parsers, virtual timeline, FFmpeg bridge, diagnostics and timing
 src/lib/pipeline/             Resumable preparation and AI orchestration
 src/lib/notes/                Token budgets, batching, prompts, validation and assembly
 src/lib/pdf/                  Local PDF renderer and worker bridge

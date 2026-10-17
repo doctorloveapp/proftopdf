@@ -1,5 +1,7 @@
 /** All audio timestamps and durations are in seconds; sizes are decimal bytes. */
 export interface AudioChunk {
+  /** Absent in legacy single-audio lessons. Times below are always global. */
+  sourcePartIndex?: number;
   id: string;
   index: number;
   startSeconds: number;
@@ -12,7 +14,20 @@ export interface AudioChunk {
   codec: string;
 }
 
+export interface AudioSourcePart {
+  index: number;
+  name: string;
+  byteLength: number;
+  durationSeconds: number;
+  sha256: string;
+  mimeType: string;
+  lastModified: number;
+  startSeconds: number;
+}
+
 export interface AudioManifest {
+  /** Optional extension: IndexedDB/checkpoint v1 single-audio stays valid. */
+  sources?: AudioSourcePart[];
   version: 1;
   jobId: string;
   source: {

@@ -6,6 +6,175 @@ import { wavHeader } from "../../src/lib/audio/wav";
 import { exportAudioLog } from "../../src/lib/audio/diagnostics";
 import { emptyProcessing } from "../../src/lib/shared/processing";
 import {
+  orderAudioFiles,
+  timelineFingerprint,
+  virtualTimeline,
+} from "../../src/lib/audio/timeline";
+import {
+  exportCheckpoint,
+  importCheckpoint,
+} from "../../src/lib/storage/checkpoint";
+import { mergeTranscripts } from "../../src/lib/transcription/merge";
+import { readAudioDuration } from "../../src/lib/audio/duration";
+
+test("Multiple audio sorts by modification date first, then natural numeric filename with stable ties", () => {
+  const file = (name: string, lastModified: number) =>
+    new File(["audio"], name, { lastModified });
+  const first = file("z.mp3", 1000),
+    two = file("parte2.mp3", 2000),
+    ten = file("parte10.mp3", 2000);
+  const input = [ten, two, first];
+  assert.deepEqual(orderAudioFiles(input), [first, two, ten]);
+  assert.deepEqual(input, [ten, two, first]);
+  assert.deepEqual(orderAudioFiles([two, two]), [two, two]);
+});
+test("Virtual timeline has cumulative offsets and an ordered content fingerprint; legacy one-file identity is unchanged", () => {
+  const parts = [12.5, 20.25, 8].map((durationSeconds, index) => ({
+    name: `p${index}.wav`,
+    durationSeconds,
+    byteLength: 1000,
+    sha256: String(index).repeat(64),
+    mimeType: "audio/wav",
+    lastModified: 1000,
+  }));
+  assert.deepEqual(
+    virtualTimeline(parts).map((p) => p.startSeconds),
+    [0, 12.5, 32.75],
+  );
+  assert.equal(timelineFingerprint(parts.slice(0, 1)), parts[0].sha256);
+  assert.notEqual(
+    timelineFingerprint(parts),
+    timelineFingerprint([...parts].reverse()),
+  );
+  assert.throws(
+    () => virtualTimeline([{ ...parts[0], durationSeconds: 7201 }]),
+    /120 minuti/,
+  );
+  assert.throws(() => virtualTimeline([{ ...parts[0], durationSeconds: NaN }]));
+});
+
+test("Multi-WAV preparation pauses/resumes at the part boundary, preserves global chunks/checkpoints and repeated speech across parts", async () => {
+  const format = {
+    channels: 1,
+    sampleRate: 16000,
+    bits: 16,
+    blockAlign: 2,
+    byteRate: 32000,
+  };
+  const make = (seconds: number, index: number) =>
+    new File(
+      [
+        wavHeader(format, 32000 * seconds),
+        new Uint8Array(32000 * seconds).fill(index),
+      ],
+      `p${index}.wav`,
+      { type: "audio/wav", lastModified: index * 1000 },
+    );
+  const files = [make(205, 1), make(90, 2)];
+  for (const file of files)
+    Object.defineProperty(file, "arrayBuffer", {
+      value: () => {
+        throw new Error("Never read a whole original into RAM");
+      },
+    });
+  assert.equal(
+    await readAudioDuration(files[1], new AbortController().signal),
+    90,
+  );
+  const local = initial(files[0]);
+  await saveJob(local);
+  const aborter = new AbortController();
+  const paused = await prepareAudio(
+    files,
+    local,
+    aborter.signal,
+    (entry, progress) => {
+      if (
+        progress.stage === "preparing" &&
+        entry.manifest.chunks.at(-1)?.endSeconds === 205
+      )
+        aborter.abort("user-pause");
+    },
+    () => {},
+  );
+  assert.equal(paused.job.stage, "paused");
+  assert.equal(paused.manifest.source.durationSeconds, 295);
+  assert.equal(paused.manifest.sources?.length, 2);
+  assert(
+    paused.manifest.chunks.at(-1)!.endSeconds <
+      paused.manifest.source.durationSeconds,
+  );
+  const before = (await getChunk(local.job.id, 0))!.metadata.sha256;
+  await assert.rejects(
+    () =>
+      prepareAudio(
+        [...files].reverse(),
+        paused,
+        new AbortController().signal,
+        () => {},
+        () => {},
+        true,
+      ),
+    /non corrisponde/,
+  );
+  const ready = await prepareAudio(
+    files,
+    paused,
+    new AbortController().signal,
+    () => {},
+    () => {},
+  );
+  assert.equal(ready.job.stage, "ready");
+  assert.equal((await getChunk(local.job.id, 0))!.metadata.sha256, before);
+  const second = ready.manifest.chunks.find((c) => c.sourcePartIndex === 1)!;
+  assert.equal(second.startSeconds, 205);
+  assert.equal(second.endSeconds, 295);
+  assert.equal(second.overlapSeconds, 0);
+  assert(
+    ready.manifest.chunks.every(
+      (c, i) => c.index === i && c.byteLength <= 3200000,
+    ),
+  );
+  const imported = importCheckpoint(exportCheckpoint(ready));
+  assert.deepEqual(imported.manifest.sources, ready.manifest.sources);
+  assert.equal(imported.job.sourceFingerprint, ready.job.sourceFingerprint);
+  const corrupt = JSON.parse(exportCheckpoint(ready));
+  corrupt.sources[1].startSeconds++;
+  assert.throws(() => importCheckpoint(JSON.stringify(corrupt)), /timeline/);
+  const previous = ready.manifest.chunks[second.index - 1];
+  const text = "La velocita cambia nel tempo";
+  const transcripts = Object.fromEntries(
+    [previous, second].map((chunk) => [
+      chunk.id,
+      {
+        sha256: chunk.sha256,
+        status: "confirmed",
+        segments: [
+          {
+            start:
+              chunk === previous
+                ? chunk.endSeconds - chunk.startSeconds - 1
+                : 0,
+            end: chunk === previous ? chunk.endSeconds - chunk.startSeconds : 1,
+            text,
+            uncertain: false,
+          },
+        ],
+      },
+    ]),
+  );
+  const result = mergeTranscripts(
+    { ...ready.manifest, chunks: [previous, second] },
+    transcripts as never,
+  );
+  assert.deepEqual(
+    result.map((s) => s.text),
+    [text, text],
+  );
+  assert.equal(result[1].startSeconds, 205);
+  await removeJob(local.job.id);
+});
+import {
   getChunk,
   listJobs,
   removeJob,

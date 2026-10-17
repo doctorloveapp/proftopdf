@@ -200,9 +200,10 @@ export function operationFingerprint(parts: string[]) {
 
 export async function getQuotaSnapshot(
   kind: "stt" | "notes",
+  verifiedCost = 1,
 ): Promise<QuotaState> {
   const config = getServerConfig();
-  const spec = profile(kind, 1);
+  const spec = profile(kind, verifiedCost);
   const result = decode(
     await getRedis().eval(QUOTA_RESERVE_LUA, keys(kind, "snapshot", spec), [
       JSON.stringify(spec),

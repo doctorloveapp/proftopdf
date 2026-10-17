@@ -44,6 +44,16 @@ worker.onmessage = async ({
     if (native.startsWith("PDF_UNSUPPORTED_GLYPH")) {
       code = "PDF_UNSUPPORTED_GLYPH";
       message = `I font PDF disponibili non contengono un simbolo (${native.split(" ").at(-1)}). Gli appunti sono salvati: esporta il log oppure modifica il simbolo e riprova solo "Prepara PDF", senza rifare la trascrizione.`;
+    } else if (/^PDF_MATH_/.test(native)) {
+      code = native.startsWith("PDF_MATH_LAYOUT")
+        ? "PDF_MATH_LAYOUT"
+        : "PDF_MATH_INVALID";
+      message =
+        "Una formula non può essere composta correttamente. Gli appunti sono salvati: esporta il log o correggi la formula, poi riprova solo Prepara PDF.";
+    } else if (/import|module|chunk/i.test(native)) {
+      code = "PDF_MATH_LOAD";
+      message =
+        "Caricamento del compositore matematico fallito. Ricarica l’app e riprova solo Prepara PDF.";
     } else if (/PDF_FONT_HTTP|fetch|network/i.test(native)) {
       code = "PDF_FONT_LOAD";
       message =

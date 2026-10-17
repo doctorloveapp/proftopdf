@@ -5,8 +5,13 @@ import type {
   OutlineOutput,
   NotesRemote,
 } from "@/lib/shared/processing";
-export const LLM_ORDER: LlmProvider[] = ["openai", "openrouter", "groq"];
+import { LLM_POLICY_REVISION } from "@/lib/shared/processing";
+export { LLM_POLICY_REVISION } from "@/lib/shared/processing";
+export const LLM_ORDER: LlmProvider[] = ["openai", "groq", "openrouter"];
+export const GROQ_MAX_WAIT_MS = 15 * 60 * 1000;
 export interface CascadeState {
+  policy?: string;
+  groqLeg?: number;
   index: number;
   round: number;
   roundHadInference: boolean;
@@ -14,6 +19,8 @@ export interface CascadeState {
   usage: Omit<NotesUsage, "legs">[];
 }
 export const freshCascade = (): CascadeState => ({
+  policy: LLM_POLICY_REVISION,
+  groqLeg: 0,
   index: 0,
   round: 0,
   roundHadInference: false,
@@ -21,6 +28,7 @@ export const freshCascade = (): CascadeState => ({
   usage: [],
 });
 export interface CascadeDependencies {
+  now?: () => number;
   state: CascadeState;
   execute(
     provider: LlmProvider,
@@ -41,7 +49,24 @@ export function canFailover(error: RouteError) {
     "PROVIDER_AUTH",
     "PROVIDER_ACCESS_DENIED",
     "PROVIDER_MODEL_UNAVAILABLE",
+    "PROVIDER_SERVICE_UNAVAILABLE",
   ].includes(error.code);
+}
+const groqWaitCodes = new Set([
+  "LLM_QUOTA",
+  "LLM_COOLDOWN",
+  "QUOTA_EXHAUSTED",
+  "PROVIDER_COOLDOWN",
+  "PROVIDER_RATE_LIMIT",
+]);
+/** Strict threshold: exactly fifteen minutes still stays with Groq. */
+export function shouldWaitOnGroq(error: RouteError, now = Date.now()) {
+  return (
+    groqWaitCodes.has(error.code) &&
+    (!error.retryAt ||
+      !Number.isFinite(Date.parse(error.retryAt)) ||
+      Date.parse(error.retryAt) - now <= GROQ_MAX_WAIT_MS)
+  );
 }
 export function combinedUsage(legs: Omit<NotesUsage, "legs">[]): NotesUsage {
   return {
@@ -62,11 +87,21 @@ export async function runCascade(
   deps: CascadeDependencies,
 ): Promise<NotesRemote> {
   const state = deps.state;
+  const now = deps.now ?? Date.now;
+  if (state.policy !== LLM_POLICY_REVISION) {
+    // Keep operation/cache IDs stable across deployment. Old index 1 was
+    // OpenRouter: reassess Groq first, without replaying a paid OpenAI leg.
+    state.index = state.index === 0 ? 0 : 1;
+    state.groqLeg = state.round;
+    state.policy = LLM_POLICY_REVISION;
+    await deps.save(state);
+  }
   while (state.index < LLM_ORDER.length) {
     const provider = LLM_ORDER[state.index];
+    const leg = provider === "groq" ? (state.groqLeg ?? 0) : state.round;
     let started = false;
     try {
-      const result = await deps.execute(provider, state.round);
+      const result = await deps.execute(provider, leg);
       const legs = [...state.usage, ...(result.usage ? [result.usage] : [])];
       const output = { ...result, usage: combinedUsage(legs) };
       await deps.cache(output);
@@ -77,10 +112,10 @@ export async function runCascade(
         const usage = {
           ...error.diagnostics.usage,
           provider,
-          leg: state.round,
+          leg,
         };
         const prior = state.usage.findIndex(
-          (value) => value.provider === provider && value.leg === state.round,
+          (value) => value.provider === provider && value.leg === leg,
         );
         if (prior < 0) state.usage.push(usage);
         else state.usage[prior] = usage;
@@ -105,6 +140,29 @@ export async function runCascade(
             usage: combinedUsage(state.usage),
           };
         throw error;
+      }
+      // A received 429 has its own cached rejection. The next safe Groq
+      // attempt needs a new leg; a local quota denial consumes no leg.
+      if (provider === "groq" && started) state.groqLeg = leg + 1;
+      if (provider === "groq" && shouldWaitOnGroq(error, now())) {
+        await deps.save(state); // pin Groq across polling, pause and resume
+        throw new RouteError(
+          429,
+          "LLM_QUOTA",
+          "Groq richiede una breve pausa. Il lavoro è salvato e riprenderà sullo stesso motore.",
+          error.retryAt && Date.parse(error.retryAt) > now()
+            ? error.retryAt
+            : new Date(now() + 60_000).toISOString(),
+          {
+            stage: "quota",
+            issueCount: 0,
+            issues: [],
+            ...error.diagnostics,
+            ...(state.usage.length
+              ? { usage: combinedUsage(state.usage) }
+              : {}),
+          },
+        );
       }
       state.failures.push({
         provider,

@@ -14,6 +14,7 @@ import {
   emptyProcessing,
   MAX_ATTEMPTS,
   LLM_ROUTING_REVISION,
+  LLM_POLICY_REVISION,
   REPAIRABLE_NOTES_CODES,
   type ChunkTranscript,
   type NotesRequest,
@@ -133,6 +134,13 @@ export async function processLecture(
     data.routingRevision = LLM_ROUTING_REVISION;
     data.notesBudgetProfile = "large";
   }
+  if (data.routingPolicy !== LLM_POLICY_REVISION) {
+    // Reassess an old notes-only wait once under the new cascade. Do not
+    // change batch/attempt IDs, confirmed work, audio waits or quota counters.
+    if (/^(notes|outline)-/.test(data.failedUnitId ?? ""))
+      current.job.retryAt = null;
+    data.routingPolicy = LLM_POLICY_REVISION;
+  }
   const aborter = new AbortController(),
     combined = aborter.signal;
   const relay = () => aborter.abort(signal.reason);
@@ -175,7 +183,7 @@ export async function processLecture(
       Math.ceil((Date.parse(until) - Date.now()) / 1000),
     );
     log("quota.wait", { unit: key, retryAt: until, waitSeconds });
-    if (waitSeconds > 120) {
+    if (waitSeconds > (/^(notes|outline)-/.test(key) ? 900 : 120)) {
       message =
         "Attesa lunga per la quota: lavoro salvato, puoi chiudere l’app e riprendere più tardi.";
       log("quota.long-pause", { unit: key, retryAt: until, waitSeconds });
@@ -299,7 +307,12 @@ export async function processLecture(
     }
   }
   try {
-    if (!current.manifest.chunks.length || !current.job.sourceFingerprint)
+    if (
+      !current.manifest.chunks.length ||
+      !current.job.sourceFingerprint ||
+      current.manifest.chunks.at(-1)!.endSeconds <
+        current.manifest.source.durationSeconds - 0.00001
+    )
       throw new Error("Prepara prima la registrazione.");
     const priorError = current.job.error;
     current.job.error = null;

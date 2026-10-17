@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { getRedis } from "../src/lib/server/redis";
 import { claimRoute } from "../src/lib/server/llm/state";
+import {
+  runCascade,
+  LLM_POLICY_REVISION,
+} from "../src/lib/server/llm/cascade-core";
+import { createRequire } from "node:module";
+// Use the same tsx/CJS class identity as cascade-core in this isolated .mts
+// runner. Production bundling and the unit suite have a single module graph.
+const { RouteError } = createRequire(import.meta.url)(
+  "../src/lib/server/http-core.ts",
+);
 process.loadEnvFile(".env");
 const id = `lock-probe-${crypto.randomUUID()}`;
 const key = `proftopdf:v2:llm-route:${id}`;
@@ -31,12 +41,49 @@ try {
   await route.save(route.state);
   await route.release(route.state);
   stage = "persisted-routing";
-  const next = await claimRoute(id, "synthetic-fingerprint", tombstone, index);
+  let next = await claimRoute(id, "synthetic-fingerprint", tombstone, index);
   assert.equal(next.state.index, 1);
+  assert.equal(next.state.policy, LLM_POLICY_REVISION);
   await assert.rejects(
     () => claimRoute(id, "changed-fingerprint", tombstone, index),
     { code: "IDEMPOTENCY_CONFLICT" },
   );
+  stage = "short-groq-wait-survives-release";
+  await assert.rejects(
+    () =>
+      runCascade({
+        state: next.state,
+        save: next.save,
+        cache: async () => {
+          throw new Error("No successful result expected");
+        },
+        execute: async (provider) => {
+          assert.equal(provider, "groq");
+          throw new RouteError(
+            429,
+            "PROVIDER_RATE_LIMIT",
+            "Synthetic rejection",
+            new Date(Date.now() + 90_000).toISOString(),
+            {
+              stage: "quota",
+              issueCount: 0,
+              issues: [],
+              usage: {
+                reservedTokens: 10,
+                confirmedTokens: 0,
+                costMicroUsd: 0,
+              },
+            },
+          );
+        },
+      }),
+    { code: "LLM_QUOTA" },
+  );
+  await next.release(next.state);
+  next = await claimRoute(id, "synthetic-fingerprint", tombstone, index);
+  assert.equal(next.state.index, 1);
+  assert.equal(next.state.groqLeg, 1);
+  assert.equal(next.state.usage.length, 1);
   stage = "ambiguous-call-remains-locked";
   await next.started(next.state);
   // Simulate lease expiry, keeping the started flag. Expiry must NOT authorize
@@ -63,6 +110,7 @@ try {
     simultaneousClaims: 12,
     successfulClaims: 1,
     stateSurvivesRelease: true,
+    groqShortWaitPersisted: true,
     fingerprintConflictBlocked: true,
     expiredStartedLeaseBlocked: true,
     deletedJobBlocked: true,

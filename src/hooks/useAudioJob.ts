@@ -71,7 +71,13 @@ export function useAudioJob() {
     };
   }, [refresh]);
   const start = useCallback(
-    async (file: File, title: string, subject: string, existing?: LocalJob) => {
+    async (
+      files: File[],
+      title: string,
+      subject: string,
+      existing?: LocalJob,
+    ) => {
+      if (!files.length) return;
       if (active.current) return;
       active.current = true;
       let resolve!: () => void;
@@ -97,11 +103,14 @@ export function useAudioJob() {
           jobId: id,
           language: "auto",
           source: {
-            name: file.name,
-            byteLength: file.size,
+            name:
+              files.length === 1
+                ? files[0].name
+                : `${files.length} registrazioni`,
+            byteLength: files.reduce((sum, file) => sum + file.size, 0),
             durationSeconds: 0,
             sha256: "",
-            mimeType: file.type,
+            mimeType: files.length === 1 ? files[0].type : "audio/multiple",
           },
           chunks: [],
         },
@@ -125,7 +134,7 @@ export function useAudioJob() {
         if (!existing) await saveJob(local);
         upsert(local);
         const result = await prepareAudio(
-          file,
+          files,
           local,
           aborter.signal,
           (entry, value) => {

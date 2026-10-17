@@ -3,7 +3,10 @@ import { requireSession } from "@/lib/server/auth";
 import { enforceRateLimit, getQuotaSnapshot } from "@/lib/server/quota";
 import { privateJson, routeError } from "@/lib/server/responses";
 import { llmQuotaSnapshot } from "@/lib/server/llm/quota";
-import { LLM_ROUTING_REVISION } from "@/lib/shared/processing";
+import {
+  LLM_ROUTING_REVISION,
+  LLM_POLICY_REVISION,
+} from "@/lib/shared/processing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +25,7 @@ export async function GET(request: NextRequest) {
       llmQuotaSnapshot("openai"),
       llmQuotaSnapshot("openrouter"),
     ]);
-    const notesProviders = [openai, openrouter, groq];
+    const notesProviders = [openai, groq, openrouter];
     const available = notesProviders.some((provider) => provider.available);
     return privateJson({
       ok: true,
@@ -35,6 +38,7 @@ export async function GET(request: NextRequest) {
         },
         notesProviders,
         routingRevision: LLM_ROUTING_REVISION,
+        routingPolicy: LLM_POLICY_REVISION,
       },
     });
   } catch (error) {

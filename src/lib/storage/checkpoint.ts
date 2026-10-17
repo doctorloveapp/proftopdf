@@ -1,11 +1,22 @@
 import { z } from "zod";
 import { AUDIO_LIMITS } from "@/lib/shared/constants";
 import type { LocalJob } from "./jobs";
+import {
+  MAX_AUDIO_PARTS,
+  timelineFingerprint,
+  virtualTimeline,
+} from "@/lib/audio/timeline";
 
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const chunkSchema = z
   .object({
     id: z.string().max(80),
+    sourcePartIndex: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_AUDIO_PARTS - 1)
+      .optional(),
     index: z.number().int().min(0).max(1500),
     startSeconds: z.number().nonnegative(),
     endSeconds: z.number().positive().max(7200.1),
@@ -33,6 +44,32 @@ const schema = z
       })
       .strict(),
     chunks: z.array(chunkSchema).max(1500),
+    sources: z
+      .array(
+        z
+          .object({
+            index: z
+              .number()
+              .int()
+              .min(0)
+              .max(MAX_AUDIO_PARTS - 1),
+            name: z.string().min(1).max(255),
+            byteLength: z
+              .number()
+              .int()
+              .positive()
+              .max(AUDIO_LIMITS.maxFileBytes),
+            durationSeconds: z.number().positive().max(7200),
+            sha256: sha,
+            mimeType: z.string().max(80),
+            lastModified: z.number().finite().nonnegative(),
+            startSeconds: z.number().nonnegative().max(7200),
+          })
+          .strict(),
+      )
+      .min(2)
+      .max(MAX_AUDIO_PARTS)
+      .optional(),
   })
   .strict();
 
@@ -44,6 +81,7 @@ export function exportCheckpoint(local: LocalJob) {
       subject: local.subject,
       language: local.manifest.language === "auto" ? "auto" : "it",
       source: local.manifest.source,
+      sources: local.manifest.sources,
       chunks: local.manifest.chunks,
     },
     null,
@@ -62,8 +100,40 @@ export function importCheckpoint(text: string): LocalJob {
   if (!parsed.success)
     throw new Error("Il file non è un checkpoint ProfToPdf compatibile.");
   const data = parsed.data;
+  if (data.sources) {
+    const expected = virtualTimeline(data.sources);
+    if (
+      data.sources.some(
+        (part, index) =>
+          part.index !== index ||
+          Math.abs(part.startSeconds - expected[index].startSeconds) > 0.00001,
+      ) ||
+      data.sources.reduce((sum, p) => sum + p.byteLength, 0) !==
+        data.source.byteLength ||
+      Math.abs(
+        data.sources.reduce((sum, p) => sum + p.durationSeconds, 0) -
+          data.source.durationSeconds,
+      ) > 0.00001 ||
+      timelineFingerprint(data.sources) !== data.source.sha256
+    )
+      throw new Error("La timeline del checkpoint non è valida.");
+  }
   for (const [index, chunk] of data.chunks.entries()) {
     const previous = data.chunks[index - 1];
+    const part = data.sources?.[chunk.sourcePartIndex ?? -1];
+    if (
+      (data.sources &&
+        (!part ||
+          chunk.startSeconds < part.startSeconds ||
+          chunk.endSeconds > part.startSeconds + part.durationSeconds + 0.01 ||
+          ((!previous || previous.sourcePartIndex !== chunk.sourcePartIndex) &&
+            (Math.abs(chunk.startSeconds - part.startSeconds) > 0.00001 ||
+              chunk.overlapSeconds !== 0)))) ||
+      (!data.sources && (chunk.sourcePartIndex ?? 0) !== 0)
+    )
+      throw new Error(
+        "I confini degli spezzoni del checkpoint non sono validi.",
+      );
     if (
       chunk.index !== index ||
       chunk.endSeconds <= chunk.startSeconds ||
@@ -88,6 +158,7 @@ export function importCheckpoint(text: string): LocalJob {
       jobId: id,
       language: data.language,
       source: data.source,
+      ...(data.sources ? { sources: data.sources } : {}),
       chunks: data.chunks.map((chunk) => ({
         ...chunk,
         id: `${id}:${chunk.index}`,

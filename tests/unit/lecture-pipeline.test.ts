@@ -17,6 +17,7 @@ import { wavHeader } from "../../src/lib/audio/wav";
 import {
   emptyProcessing,
   LLM_ROUTING_REVISION,
+  LLM_POLICY_REVISION,
   type NotesOutput,
 } from "../../src/lib/shared/processing";
 import { buildTextUnits } from "../../src/lib/notes/assemble";
@@ -107,6 +108,160 @@ const syntheticNotes = (ids: string[]): NotesOutput => ({
   glossary: [],
   uncertainties: [],
   coveredSourceIds: ids,
+});
+test("A wait from the previous three-provider policy is reassessed without changing the operation ID or retranscribing audio", async (t) => {
+  t.mock.method(console, "info", () => {});
+  const local = alreadyTranscribedLongLecture();
+  const data = local.processing!;
+  data.routingRevision = LLM_ROUTING_REVISION;
+  data.notesBudgetProfile = "large";
+  data.notesPlan = await planNotes(
+    mergeTranscripts(local.manifest, data.transcripts),
+    data,
+    { jobId: local.job.id, title: local.title, subject: local.subject },
+  );
+  const unitId = data.notesPlan.units[0].id;
+  data.failedUnitId = `notes-${unitId}`;
+  local.job.retryAt = new Date(Date.now() + 12 * 3600_000).toISOString();
+  await saveJob(local);
+  const seen: string[] = [];
+  try {
+    const done = await processLecture(
+      local,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      {
+        transcribe: async () => {
+          throw new Error("Saved STT must be reused");
+        },
+        wait: async () => {
+          throw new Error("Old policy wait must be reassessed");
+        },
+        notes: async (input) => {
+          seen.push(input.unitId);
+          return input.mode === "outline"
+            ? {
+                chapters: [
+                  {
+                    title: "Fisica",
+                    sectionIds: input.sources.map((s) => s.id),
+                  },
+                ],
+              }
+            : syntheticNotes(input.sources.map((s) => s.id));
+        },
+      },
+    );
+    assert.equal(seen[0], unitId);
+    assert.equal(done.processing!.routingPolicy, LLM_POLICY_REVISION);
+    assert.equal(Object.keys(done.processing!.transcripts).length, 33);
+  } finally {
+    await removeJob(local.job.id);
+  }
+});
+
+test("Two recordings flow through one chronological transcription, notes plan, outline and document, and saved results replay without calls", async (t) => {
+  t.mock.method(console, "info", () => {});
+  const format = {
+    channels: 1,
+    sampleRate: 16000,
+    bits: 16,
+    blockAlign: 2,
+    byteRate: 32000,
+  };
+  const files = [4, 6].map(
+    (seconds, i) =>
+      new File(
+        [
+          wavHeader(format, seconds * 32000),
+          new Uint8Array(seconds * 32000).fill(i),
+        ],
+        `p${i}.wav`,
+        { type: "audio/wav" },
+      ),
+  );
+  const local = initial(files[0]);
+  await saveJob(local);
+  const prepared = await prepareAudio(
+    files,
+    local,
+    new AbortController().signal,
+    () => {},
+    () => {},
+  );
+  const starts: number[] = [],
+    noteSources: string[] = [];
+  let notesCalls = 0;
+  const adapter: ProcessingAdapter = {
+    transcribe: async (blob, chunk) => {
+      assert(blob.size <= 3200000);
+      starts.push(chunk.startSeconds);
+      return {
+        sha256: chunk.sha256,
+        model: "synthetic",
+        status: "transcribed",
+        durationSeconds: chunk.endSeconds - chunk.startSeconds,
+        segments: [
+          {
+            start: 0,
+            end: chunk.endSeconds - chunk.startSeconds,
+            text: `Concetto ${chunk.index}: F = ma.`,
+            uncertain: false,
+          },
+        ],
+      };
+    },
+    notes: async (input) => {
+      notesCalls++;
+      if (input.mode === "outline")
+        return {
+          chapters: [
+            {
+              title: "Lezione unica",
+              sectionIds: input.sources.map((s) => s.id),
+            },
+          ],
+        };
+      noteSources.push(...input.sources.map((s) => s.id));
+      return syntheticNotes(input.sources.map((s) => s.id));
+    },
+    wait: async () => {
+      throw new Error("Unexpected quota wait");
+    },
+  };
+  try {
+    const done = await processLecture(
+      prepared,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      adapter,
+    );
+    assert.equal(done.job.stage, "completed");
+    assert.deepEqual(starts, [0, 4]);
+    assert.deepEqual(noteSources, ["s0-0p0", "s1-0p0"]);
+    assert.equal(
+      done.processing!.document!.sections.filter((s) => s.level === 1).length,
+      1,
+    );
+    assert.equal(done.processing!.document!.complete, true);
+    const calls = notesCalls;
+    await processLecture(
+      done,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      adapter,
+    );
+    assert.deepEqual(starts, [0, 4]);
+    assert.equal(notesCalls, calls);
+  } finally {
+    await removeJob(local.job.id);
+  }
 });
 
 test("A legacy 12-hour notes pause is reassessed once with the new primary, retaining all confirmed transcripts", async (t) => {

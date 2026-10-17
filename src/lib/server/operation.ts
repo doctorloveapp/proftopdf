@@ -1,7 +1,12 @@
 import "server-only";
 import { getRedis } from "./redis";
 import { cacheResult, readCachedResult } from "./result-cache";
-import { reserveQuota, settleQuota, operationFingerprint } from "./quota";
+import {
+  reserveQuota,
+  settleQuota,
+  operationFingerprint,
+  getQuotaSnapshot,
+} from "./quota";
 import { RouteError } from "./http-core";
 import { performOperation } from "./operation-core";
 import { getServerConfig } from "./config";
@@ -67,12 +72,6 @@ export async function runAiOperation<T>(
       reserve: async () => {
         // Cache replay precedes this guard, so a deployment changing the token
         // estimate cannot block retrieval of an already completed operation.
-        if (kind === "notes" && cost > getServerConfig().LLM_TOKENS_PER_MINUTE)
-          throw new RouteError(
-            413,
-            "TOKEN_BUDGET",
-            "Questa unità supera il budget gratuito. Riprendi con unità di testo più piccole.",
-          );
         if (await getRedis().get(`${index}:deleted`))
           throw new RouteError(
             410,
@@ -87,6 +86,34 @@ export async function runAiOperation<T>(
             "Il servizio IA richiede una pausa. Il lavoro è salvato.",
             new Date(until).toISOString(),
           );
+        if (
+          kind === "notes" &&
+          cost > getServerConfig().LLM_TOKENS_PER_MINUTE
+        ) {
+          // Inspect a feasible small Groq request before asking the client to
+          // rebatch. A daily block can go directly to OpenRouter with the
+          // original large unit. Inspection never reserves tokens.
+          const snapshot = await getQuotaSnapshot(
+            "notes",
+            Math.min(5500, getServerConfig().LLM_TOKENS_PER_MINUTE),
+          );
+          const waits = snapshot.windows
+            .map((w) => w.retryAt)
+            .filter((at): at is string => Boolean(at))
+            .sort();
+          if (waits.length)
+            throw new RouteError(
+              429,
+              "QUOTA_EXHAUSTED",
+              "Groq richiede una pausa per la quota.",
+              waits.at(-1)!,
+            );
+          throw new RouteError(
+            413,
+            "TOKEN_BUDGET",
+            "Questa unità supera il budget gratuito. Riprendi con unità di testo più piccole.",
+          );
+        }
         return reserveQuota(kind, id, cost, fingerprint);
       },
       cache: (value) => cacheResult(kind, id, owner, fingerprint, value, jobId),
@@ -160,6 +187,12 @@ export async function runAiOperation<T>(
             503,
             "PROVIDER_MODEL_UNAVAILABLE",
             "Il modello Groq configurato non è disponibile. Il lavoro locale è conservato.",
+          );
+        if (kind === "notes" && status && status >= 500 && status <= 599)
+          return new RouteError(
+            503,
+            "PROVIDER_SERVICE_UNAVAILABLE",
+            "Groq ha restituito un errore di servizio. Passaggio alla riserva gratuita.",
           );
         return new RouteError(
           503,

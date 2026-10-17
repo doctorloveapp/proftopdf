@@ -87,7 +87,7 @@ export async function planNotes(
     sourceDigest = digest(sources);
   const profile = data.notesBudgetProfile ?? "groq";
   const budgetRevision =
-    profile === "large" ? "cascade-large-v1" : NOTES_BUDGET_REVISION;
+    profile === "large" ? "cascade-large-math-v2" : NOTES_BUDGET_REVISION;
   if (
     data.notesPlan?.version === "bpe-v1" &&
     data.notesPlan.sourceDigest === sourceDigest

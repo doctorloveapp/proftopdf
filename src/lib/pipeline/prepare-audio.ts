@@ -1,10 +1,19 @@
 import { AUDIO_LIMITS } from "@/lib/shared/constants";
-import type { AudioChunk, ProcessingJob } from "@/lib/shared/types";
+import type {
+  AudioChunk,
+  AudioSourcePart,
+  ProcessingJob,
+} from "@/lib/shared/types";
 import { inspectWav, sliceWav, nextChunkStart } from "@/lib/audio/wav";
 import { fingerprint, abortIfNeeded } from "@/lib/audio/fingerprint";
 import { openMp3 } from "@/lib/audio/mp3";
+import {
+  timelineFingerprint,
+  validateAudioSelection,
+  virtualTimeline,
+} from "@/lib/audio/timeline";
 import { createAudioLog, type AudioLog } from "@/lib/audio/diagnostics";
-import { audioFailure } from "@/lib/audio/errors";
+import { audioFailure, AudioProcessingError } from "@/lib/audio/errors";
 import {
   acquireStoredJob,
   renewLease,
@@ -39,27 +48,27 @@ export interface PreparationProgress {
   message: string;
 }
 
+/** Files are already in the user's chosen order. Never sort during resume. */
 export async function prepareAudio(
-  file: File,
+  input: File | readonly File[],
   local: LocalJob,
   signal: AbortSignal,
   notify: (local: LocalJob, progress: PreparationProgress) => void,
   log: AudioLog = createAudioLog(local.job.id),
   forcePcm = false,
 ) {
+  const files = Array.isArray(input) ? input : [input as File];
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   log("preparation.start", {
-    bytes: file.size,
-    extension:
-      file.name
-        .match(/\.(m4a|aac|mp3|wav|flac|ogg|webm|mp4)$/i)?.[1]
-        .toLowerCase() ?? "unknown",
+    bytes: totalBytes,
+    parts: files.length,
     savedChunks: local.preparedChunkIds.length,
     online: navigator.onLine ?? false,
   });
-  let token: string;
-  let current: LocalJob;
+  let token: string, current: LocalJob;
   try {
-    validateFile(file);
+    validateAudioSelection(files);
+    files.forEach(validateFile);
     const stored = await acquireStoredJob(local.job.id);
     token = stored.token;
     current = structuredClone(stored.local);
@@ -68,7 +77,8 @@ export async function prepareAudio(
     throw error;
   }
   log("lease.acquired");
-  let phase = "fingerprint";
+  let phase = "fingerprint",
+    activePart = 0;
   const aborter = new AbortController();
   const timer = setInterval(() => {
     renewLease(local.job.id, token).catch(() => {
@@ -78,7 +88,7 @@ export async function prepareAudio(
   }, 5_000);
   const combined = aborter.signal;
   const relayAbort = () => aborter.abort(signal.reason);
-  if (signal.aborted) aborter.abort(signal.reason);
+  if (signal.aborted) relayAbort();
   else signal.addEventListener("abort", relayAbort, { once: true });
   let worker:
     | Awaited<ReturnType<typeof import("@/lib/audio/ffmpeg").openAudioWorker>>
@@ -96,102 +106,134 @@ export async function prepareAudio(
     await saveJobWithLease(current, token);
     log("checkpoint.saved", { stage, chunks: current.preparedChunkIds.length });
   }
-  try {
-    await checkpoint("analyzing");
-    emit({
-      stage: "analyzing",
-      fraction: 0,
-      message: "Verifica del file sul dispositivo",
-    });
-    log("fingerprint.start");
-    let hashQuarter = -1;
-    const sha256 = await fingerprint(file, combined, (fraction) => {
-      if (Math.floor(fraction * 4) > hashQuarter) {
-        hashQuarter = Math.floor(fraction * 4);
-        log("fingerprint.progress", { fraction });
-      }
-      emit({
-        stage: "analyzing",
-        fraction,
-        message: "Verifica del file sul dispositivo",
-      });
-    });
-    log("fingerprint.complete");
-    if (
-      current.job.sourceFingerprint &&
-      current.job.sourceFingerprint !== sha256
-    )
-      throw new Error(
-        "Questo file non corrisponde alla lezione salvata. Seleziona la registrazione originale.",
-      );
-    if (forcePcm) {
-      // Only invalidate derived data after confirming the original file hash.
-      // A mistakenly selected file must not erase already saved text.
-      current.manifest.chunks = [];
-      current.preparedChunkIds = [];
-      current.job.completedChunkIds = [];
-      current.job.completedNotesUnitIds = [];
-      current.processing = undefined;
-      log("format.normalize-requested", { output: "pcm_s16le" });
-    }
-    phase = "format";
+  async function open(file: File) {
+    abortIfNeeded(combined);
     const wav = await inspectWav(file);
-    let duration: number;
     if (wav) {
-      duration = wav.duration;
-      log("format.selected", { engine: "wav-js", durationSeconds: duration });
-    } else if (
+      log("format.selected", {
+        engine: "wav-js",
+        part: activePart,
+        durationSeconds: wav.duration,
+      });
+      return { wav, duration: wav.duration, estimatedBytes: file.size };
+    }
+    if (
       !forcePcm &&
       (/\.mp3$/i.test(file.name) || file.type === "audio/mpeg")
     ) {
       phase = "mp3-scan";
-      log("format.selected", { engine: "mp3-js" });
+      log("format.selected", { engine: "mp3-js", part: activePart });
       worker = await openMp3(
         file,
         combined,
         (fraction) =>
           emit({
             stage: "analyzing",
-            fraction,
-            message: "Lettura dei frame MP3 sul dispositivo",
+            fraction: (activePart + fraction) / files.length,
+            message: `Lettura dei frame MP3 · spezzone ${activePart + 1}/${files.length}`,
           }),
         log,
       );
-      duration = worker.duration;
     } else {
       phase = "worker";
-      log("format.selected", { engine: "ffmpeg-wasm" });
+      log("format.selected", { engine: "ffmpeg-wasm", part: activePart });
       emit({
         stage: "analyzing",
         fraction: null,
-        message: "Caricamento del motore audio, solo al primo utilizzo",
+        message: `Caricamento del motore audio · spezzone ${activePart + 1}/${files.length}`,
       });
       const { openAudioWorker } = await import("@/lib/audio/ffmpeg");
       worker = await openAudioWorker(file, combined, log, forcePcm);
-      duration = worker.duration;
     }
-    if (duration > AUDIO_LIMITS.maxDurationSeconds)
-      throw new Error("La registrazione supera il limite di 120 minuti.");
-    if (!Number.isFinite(duration) || duration <= 0)
-      throw new Error("Impossibile determinare la durata dell’audio.");
+    return {
+      wav: null,
+      duration: worker.duration,
+      estimatedBytes: worker.estimatedBytes,
+    };
+  }
+  try {
+    await checkpoint("analyzing");
+    const originals: Omit<AudioSourcePart, "index" | "startSeconds">[] = [];
+    // Confirm EVERY original before invalidating derived data. Hash bounded
+    // slices, never concatenate recordings or decode the full lecture.
+    for (const [index, file] of files.entries()) {
+      activePart = index;
+      phase = "fingerprint";
+      log("fingerprint.start", { part: index });
+      const sha256 = await fingerprint(file, combined, (fraction) =>
+        emit({
+          stage: "analyzing",
+          fraction: (index + fraction) / files.length,
+          message: `Verifica originale ${index + 1}/${files.length}`,
+        }),
+      );
+      originals.push({
+        name: file.name,
+        byteLength: file.size,
+        mimeType: file.type,
+        sha256,
+        durationSeconds: 0,
+        lastModified: file.lastModified,
+      });
+      log("fingerprint.complete", { part: index });
+    }
+    const sha256 = timelineFingerprint(originals);
+    if (
+      current.job.sourceFingerprint &&
+      current.job.sourceFingerprint !== sha256
+    )
+      throw new AudioProcessingError(
+        "AUDIO_SOURCE_MISMATCH",
+        "fingerprint",
+        "La sequenza dei file non corrisponde alla lezione salvata. Seleziona tutti gli originali nello stesso ordine.",
+      );
+    if (forcePcm) {
+      current.manifest.chunks = [];
+      current.preparedChunkIds = [];
+      current.job.completedChunkIds = [];
+      current.job.completedNotesUnitIds = [];
+      current.processing = undefined;
+      current.pdfExport = undefined;
+      log("format.normalize-requested", { output: "pcm_s16le" });
+    }
+    // Preflight one engine at a time. Know total duration/storage before saving
+    // chunks: an interrupted first part must never look like a complete lesson.
+    let estimatedBytes = 0;
+    let singleEngine: Awaited<ReturnType<typeof open>> | undefined;
+    for (const [index, file] of files.entries()) {
+      activePart = index;
+      phase = "format";
+      const engine = await open(file);
+      originals[index].durationSeconds = engine.duration;
+      estimatedBytes += engine.estimatedBytes;
+      if (files.length === 1) singleEngine = engine;
+      else {
+        worker?.close();
+        worker = undefined;
+      }
+    }
+    const sources = virtualTimeline(originals);
+    const duration = sources.reduce(
+      (sum, source) => sum + source.durationSeconds,
+      0,
+    );
     current.job.sourceFingerprint = sha256;
     current.manifest.source = {
-      name: file.name,
-      byteLength: file.size,
+      name:
+        files.length === 1 ? files[0].name : `${files.length} registrazioni`,
+      byteLength: totalBytes,
       durationSeconds: duration,
       sha256,
-      mimeType: file.type,
+      mimeType: files.length === 1 ? files[0].type : "audio/multiple",
     };
+    if (files.length > 1) current.manifest.sources = sources;
     const storage = await navigator.storage
       ?.estimate?.()
       .catch(() => undefined);
-    // Remux keeps source size; normalization can reach 32 KB/s. Reserve headroom.
     const cachedBytes = current.manifest.chunks
       .filter((chunk) => current.preparedChunkIds.includes(chunk.id))
       .reduce((sum, chunk) => sum + chunk.byteLength, 0);
-    const needed =
-      Math.max(0, (wav ? file.size : worker!.estimatedBytes) - cachedBytes) +
-      8_000_000;
+    const needed = Math.max(0, estimatedBytes - cachedBytes) + 8_000_000;
     log("storage.estimate", {
       neededBytes: needed,
       quotaBytes: storage?.quota ?? null,
@@ -203,115 +245,150 @@ export async function prepareAudio(
       );
     await navigator.storage?.persist?.().catch(() => false);
     await checkpoint("preparing");
-    phase = "segments";
-    let start = 0,
-      index = 0;
-    while (start < duration) {
-      abortIfNeeded(combined);
-      if (index > 1_500)
+    let index = 0;
+    for (const source of sources) {
+      activePart = source.index;
+      const engine = singleEngine ?? (await open(files[source.index]));
+      if (Math.abs(engine.duration - source.durationSeconds) > 0.01)
         throw new Error(
-          "Il file richiede troppi segmenti. Verifica il formato della registrazione.",
+          "La durata dello spezzone è cambiata durante la preparazione.",
         );
-      const existing = current.manifest.chunks[index];
-      const cached = existing
-        ? await getChunk(current.job.id, index)
-        : undefined;
-      let metadata: AudioChunk;
-      if (
-        existing &&
-        cached &&
-        cached.metadata.sha256 === existing.sha256 &&
-        cached.blob.size === existing.byteLength &&
-        (await fingerprint(cached.blob, combined)) === existing.sha256
-      ) {
-        log("chunk.restored", {
-          index,
-          bytes: existing.byteLength,
-          startSeconds: existing.startSeconds,
-          endSeconds: existing.endSeconds,
-        });
-        metadata = existing;
-        if (!current.preparedChunkIds.includes(metadata.id))
-          current.preparedChunkIds.push(metadata.id);
-      } else {
-        log("chunk.start", { index, requestedStartSeconds: start });
+      phase = "segments";
+      let start = 0;
+      log("timeline.part.start", {
+        part: source.index,
+        offsetSeconds: source.startSeconds,
+        durationSeconds: source.durationSeconds,
+      });
+      while (start < source.durationSeconds) {
+        abortIfNeeded(combined);
+        if (index >= 1500)
+          throw new Error(
+            "La lezione richiede troppi segmenti. Verifica le registrazioni.",
+          );
+        const existing = current.manifest.chunks[index];
+        const cached = existing
+          ? await getChunk(current.job.id, index)
+          : undefined;
+        let metadata: AudioChunk;
+        if (
+          existing &&
+          cached &&
+          (existing.sourcePartIndex ?? 0) === source.index &&
+          existing.startSeconds >= source.startSeconds &&
+          existing.endSeconds <=
+            source.startSeconds + source.durationSeconds + 0.01 &&
+          cached.metadata.sha256 === existing.sha256 &&
+          cached.blob.size === existing.byteLength &&
+          (await fingerprint(cached.blob, combined)) === existing.sha256
+        ) {
+          metadata = existing;
+          if (!current.preparedChunkIds.includes(metadata.id))
+            current.preparedChunkIds.push(metadata.id);
+          log("chunk.restored", {
+            index,
+            part: source.index,
+            bytes: metadata.byteLength,
+            startSeconds: metadata.startSeconds,
+            endSeconds: metadata.endSeconds,
+          });
+        } else {
+          emit({
+            stage: "preparing",
+            fraction: (source.startSeconds + start) / duration,
+            message: `Spezzone ${source.index + 1}/${sources.length} · segmento ${index + 1}`,
+          });
+          log("chunk.start", {
+            index,
+            part: source.index,
+            requestedStartSeconds: start,
+          });
+          const part = engine.wav
+            ? sliceWav(files[source.index], engine.wav, start)
+            : await worker!.chunk(start);
+          if (
+            part.blob.size > AUDIO_LIMITS.maxChunkBytes ||
+            part.endSeconds <= start
+          )
+            throw new Error("Il segmento generato non rispetta i limiti.");
+          const hash = await fingerprint(part.blob, combined);
+          const globalStart = source.startSeconds + part.startSeconds;
+          metadata = {
+            id: `${current.job.id}:${index}`,
+            index,
+            ...(sources.length > 1 ? { sourcePartIndex: source.index } : {}),
+            startSeconds: globalStart,
+            endSeconds: source.startSeconds + part.endSeconds,
+            overlapSeconds:
+              start > 0 && index
+                ? Math.max(
+                    0,
+                    current.manifest.chunks[index - 1].endSeconds - globalStart,
+                  )
+                : 0,
+            byteLength: part.blob.size,
+            sha256: hash,
+            mimeType: part.blob.type,
+            codec: part.codec,
+            container: part.container,
+          };
+          if (
+            existing &&
+            (existing.sha256 !== hash ||
+              existing.startSeconds !== metadata.startSeconds ||
+              existing.endSeconds !== metadata.endSeconds) &&
+            current.processing
+          )
+            throw new Error(
+              "I confini audio sono cambiati rispetto alla trascrizione salvata. Crea una nuova lezione con questi originali.",
+            );
+          const unchanged =
+            existing &&
+            existing.sha256 === metadata.sha256 &&
+            existing.startSeconds === metadata.startSeconds &&
+            existing.endSeconds === metadata.endSeconds;
+          current.manifest.chunks = unchanged
+            ? current.manifest.chunks.map((entry, n) =>
+                n === index ? metadata : entry,
+              )
+            : [...current.manifest.chunks.slice(0, index), metadata];
+          current.preparedChunkIds = unchanged
+            ? [...new Set([...current.preparedChunkIds, metadata.id])]
+            : current.manifest.chunks.map((entry) => entry.id);
+          current.job.updatedAt = new Date().toISOString();
+          abortIfNeeded(combined);
+          await savePreparedChunk(current, metadata, part.blob, token);
+          log("chunk.saved", {
+            index,
+            part: source.index,
+            bytes: part.blob.size,
+            startSeconds: metadata.startSeconds,
+            endSeconds: metadata.endSeconds,
+            overlapSeconds: metadata.overlapSeconds,
+          });
+        }
         emit({
           stage: "preparing",
-          fraction: start / duration,
-          message: `Preparazione del segmento ${index + 1}`,
+          fraction: metadata.endSeconds / duration,
+          message: `${index + 1} segmenti preparati e salvati`,
         });
-        const part = wav
-          ? sliceWav(file, wav, start)
-          : await worker!.chunk(start);
-        log("chunk.created", {
-          index,
-          bytes: part.blob.size,
-          startSeconds: part.startSeconds,
-          endSeconds: part.endSeconds,
-        });
-        if (
-          part.blob.size > AUDIO_LIMITS.maxChunkBytes ||
-          part.endSeconds <= start
-        )
-          throw new Error("Il segmento generato non rispetta i limiti.");
-        const hash = await fingerprint(part.blob, combined);
-        log("chunk.fingerprint.complete", { index });
-        metadata = {
-          id: `${current.job.id}:${index}`,
-          index,
-          startSeconds: part.startSeconds,
-          endSeconds: part.endSeconds,
-          overlapSeconds: index
-            ? Math.max(
-                0,
-                current.manifest.chunks[index - 1].endSeconds -
-                  part.startSeconds,
-              )
-            : 0,
-          byteLength: part.blob.size,
-          sha256: hash,
-          mimeType: part.blob.type,
-          codec: part.codec,
-          container: part.container,
-        };
-        // If a missing chunk is regenerated with different boundaries, invalidate
-        // its successors; their stored blobs cannot silently define a new timeline.
-        current.manifest.chunks = [
-          ...current.manifest.chunks.slice(0, index),
-          metadata,
-        ];
-        current.preparedChunkIds = current.manifest.chunks.map(
-          (entry) => entry.id,
+        index++;
+        const next = nextChunkStart(
+          metadata.startSeconds - source.startSeconds,
+          metadata.endSeconds - source.startSeconds,
+          source.durationSeconds,
         );
-        current.job.updatedAt = new Date().toISOString();
-        abortIfNeeded(combined);
-        log("chunk.persist.start", { index });
-        await savePreparedChunk(current, metadata, part.blob, token);
-        log("chunk.saved", {
-          index,
-          bytes: part.blob.size,
-          startSeconds: part.startSeconds,
-          endSeconds: part.endSeconds,
-          overlapSeconds: metadata.overlapSeconds,
-        });
+        if (next === null) break;
+        start = next;
       }
-      emit({
-        stage: "preparing",
-        fraction: metadata.endSeconds / duration,
-        message: `${index + 1} segmenti preparati e salvati`,
-      });
-      const next = nextChunkStart(
-        metadata.startSeconds,
-        metadata.endSeconds,
-        duration,
-      );
-      if (next === null) break;
-      start = next;
-      index++;
+      worker?.close();
+      worker = undefined;
+      log("timeline.part.complete", { part: source.index, chunks: index });
     }
     await checkpoint("ready");
     log("preparation.complete", {
       chunks: current.manifest.chunks.length,
+      parts: files.length,
       durationSeconds: duration,
     });
     return current;
@@ -322,11 +399,17 @@ export async function prepareAudio(
         reason:
           typeof combined.reason === "string" ? combined.reason : "interrupted",
         phase,
+        part: activePart,
       });
     else
       log(
         "preparation.failed",
-        { code: failure.code, phase: failure.phase, ...failure.details },
+        {
+          code: failure.code,
+          phase: failure.phase,
+          part: activePart,
+          ...failure.details,
+        },
         "error",
       );
     current.job = {
@@ -346,7 +429,6 @@ export async function prepareAudio(
             retryAt: null,
           },
     };
-    // A stale tab must not overwrite a newer owner's checkpoint.
     try {
       await saveJobWithLease(current, token);
     } catch {}

@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useAudioJob } from "@/hooks/useAudioJob";
 import { api, ClientApiError } from "@/lib/client/api";
-import { AUDIO_ACCEPT, validateFile } from "@/lib/pipeline/prepare-audio";
+import { validateFile } from "@/lib/pipeline/prepare-audio";
+import { orderAudioFiles, validateAudioSelection } from "@/lib/audio/timeline";
+import AudioSelection from "./AudioSelection";
+import AudioPartsList from "./AudioPartsList";
 import { removeJob, saveJob, type LocalJob } from "@/lib/storage/jobs";
 import { importCheckpoint, exportCheckpoint } from "@/lib/storage/checkpoint";
 import { exportAudioLog, removeAudioLog } from "@/lib/audio/diagnostics";
@@ -39,10 +42,9 @@ export default function StudioWorkspace({
 }) {
   const state = useAudioJob();
   const [editorOpen, setEditorOpen] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [title, setTitle] = useState(""),
     [subject, setSubject] = useState("");
-  const [dragging, setDragging] = useState(false);
   const [quotas, setQuotas] = useState<{
     transcription: QuotaState;
     notes: QuotaState;
@@ -52,8 +54,7 @@ export default function StudioWorkspace({
     [notice, setNotice] = useState("");
   const [loadingQuota, setLoadingQuota] = useState(false),
     [storageBusy, setStorageBusy] = useState(false);
-  const picker = useRef<HTMLInputElement>(null),
-    checkpointPicker = useRef<HTMLInputElement>(null);
+  const checkpointPicker = useRef<HTMLInputElement>(null);
   const selected = state.jobs.find(
     (entry) => entry.job.id === state.selectedId,
   );
@@ -92,11 +93,12 @@ export default function StudioWorkspace({
   useEffect(() => {
     if (selected?.job.error?.code === "UNAUTHENTICATED") onSessionExpired();
   }, [selected?.job.error?.code, onSessionExpired]);
-  function chooseFile(candidate: File | undefined) {
-    if (!candidate || state.busy) return;
+  function chooseFiles(candidates: File[]) {
+    if (!candidates.length || state.busy) return;
     try {
-      validateFile(candidate);
-      setFile(candidate);
+      candidates.forEach(validateFile);
+      validateAudioSelection(candidates);
+      setFiles(orderAudioFiles(candidates));
       setNotice("");
       state.setError("");
     } catch (error) {
@@ -114,7 +116,7 @@ export default function StudioWorkspace({
   function resetLesson() {
     setEditorOpen(false);
     state.setSelectedId(null);
-    setFile(null);
+    setFiles([]);
     setTitle("");
     setSubject("");
     setNotice("");
@@ -124,7 +126,7 @@ export default function StudioWorkspace({
     if (state.busy) return;
     state.setSelectedId(local.job.id);
     setEditorOpen(true);
-    setFile(null);
+    setFiles([]);
     setNotice("");
     state.setError("");
     scrollToControl("lesson-workspace", true);
@@ -179,7 +181,7 @@ export default function StudioWorkspace({
       await state.refresh();
       selectLesson(local);
       setNotice(
-        "Checkpoint importato. Seleziona il file audio originale per ricreare i segmenti sul dispositivo.",
+        "Checkpoint importato. Seleziona le registrazioni originali nello stesso ordine per ricreare i segmenti sul dispositivo.",
       );
     } catch (error) {
       state.setError(
@@ -254,6 +256,13 @@ export default function StudioWorkspace({
       ? selectedEnd / selected.manifest.source.durationSeconds
       : 0);
   const LibraryHeading = editorOpen ? "h2" : "h1";
+  const showAudioPicker =
+    !selected ||
+    (selected.job.stage !== "ready" && !selected.processing && !state.busy) ||
+    (!state.busy &&
+      /^(LOCAL_AUDIO_MISSING|AUDIO_|MP3_)/.test(
+        selected.job.error?.code ?? "",
+      ));
 
   return (
     <main className="studio-main" id="contenuto">
@@ -382,8 +391,8 @@ export default function StudioWorkspace({
                   provider.provider === "openai"
                     ? "OpenAI · motore principale"
                     : provider.provider === "openrouter"
-                      ? "OpenRouter · prima riserva gratuita"
-                      : "Groq · seconda riserva gratuita";
+                      ? "OpenRouter · riserva per blocchi prolungati"
+                      : "Groq · prima riserva gratuita";
                 return (
                   <div key={provider.provider}>
                     <span>{label}</span>
@@ -468,70 +477,19 @@ export default function StudioWorkspace({
                 </div>
               </div>
             )}
-            {(!selected ||
-              (selected.job.stage !== "ready" &&
-                !selected.processing &&
-                !state.busy) ||
-              (!state.busy &&
-                [
-                  "LOCAL_AUDIO_MISSING",
-                  "AUDIO_NORMALIZATION_REQUIRED",
-                ].includes(selected.job.error?.code ?? ""))) && (
+            {selected?.manifest.sources &&
+              (!showAudioPicker || !files.length) && (
+                <AudioPartsList items={selected.manifest.sources} />
+              )}
+            {showAudioPicker && (
               <>
-                <div
-                  className={`drop-zone ${dragging ? "is-dragging" : ""}`}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    if (!state.busy) setDragging(true);
-                  }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    setDragging(false);
-                    if (event.dataTransfer.files.length > 1)
-                      state.setError("Seleziona una registrazione alla volta.");
-                    else chooseFile(event.dataTransfer.files[0]);
-                  }}
-                >
-                  <span className="upload-symbol" aria-hidden="true">
-                    ↑
-                  </span>
-                  <h3>
-                    {file
-                      ? file.name
-                      : selected
-                        ? "Ritrova il file originale"
-                        : "La registrazione è qui che inizia."}
-                  </h3>
-                  <p>
-                    {file
-                      ? `${size(file.size)} · pronto per la verifica`
-                      : "Scegli un audio dal dispositivo, oppure trascinalo qui."}
-                  </p>
-                  <button
-                    id="audio-picker-button"
-                    className="button"
-                    type="button"
-                    onClick={() => {
-                      if (picker.current) picker.current.value = "";
-                      picker.current?.click();
-                    }}
-                    disabled={state.busy}
-                  >
-                    {file ? "Cambia file" : "Scegli la registrazione"}
-                  </button>
-                  <span className="format-note">
-                    M4A, AAC, MP3, WAV, FLAC, Ogg, WebM · fino a 120 MB / 120
-                    min
-                  </span>
-                  <input
-                    ref={picker}
-                    type="file"
-                    accept={AUDIO_ACCEPT}
-                    hidden
-                    onChange={(event) => chooseFile(event.target.files?.[0])}
-                  />
-                </div>
+                <AudioSelection
+                  files={files}
+                  disabled={state.busy || storageBusy}
+                  restoring={Boolean(selected)}
+                  onChoose={chooseFiles}
+                  onOrder={setFiles}
+                />
                 {!selected && (
                   <div className="lesson-fields">
                     <label>
@@ -568,10 +526,10 @@ export default function StudioWorkspace({
                 </p>
                 <button
                   className="button prepare-button"
-                  disabled={!file || state.busy || storageBusy}
+                  disabled={!files.length || state.busy || storageBusy}
                   onClick={() => {
-                    if (file) {
-                      void state.start(file, title, subject, selected);
+                    if (files.length) {
+                      void state.start(files, title, subject, selected);
                       scrollToControl("lecture-progress", true);
                     }
                   }}

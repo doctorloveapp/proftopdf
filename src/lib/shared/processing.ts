@@ -6,7 +6,7 @@ export const NOTES_SOURCE_BYTES = 1200;
 export const NOTES_MAX_OUTPUT = 2400;
 export const MAX_ATTEMPTS = 3;
 export const NOTES_RESULT_BYTES = 44_000;
-export const NOTES_BUDGET_REVISION = "source-map-v1";
+export const NOTES_BUDGET_REVISION = "source-map-math-v2";
 export const STT_UNCERTAINTY_NOTICE =
   "Questo passaggio della trascrizione è segnalato come incerto: confrontalo con la registrazione originale prima di studiarlo.";
 export const REPAIRABLE_NOTES_CODES = new Set([
@@ -95,7 +95,10 @@ export const outlineOutputSchema = z
 export type OutlineOutput = z.infer<typeof outlineOutputSchema> & {
   usage?: NotesUsage;
 };
+// Wire/operation identity stays stable: changing routing policy must not
+// duplicate previously started paid requests. Policy lives in CascadeState.
 export const LLM_ROUTING_REVISION = "cascade-luna-v1";
+export const LLM_POLICY_REVISION = "groq-first-15m-v2";
 export type NotesRemote =
   | NotesOutput
   | OutlineOutput
@@ -126,6 +129,7 @@ export interface ProcessingData {
   usageHistoryComplete?: boolean;
   notesBudgetProfile?: "large" | "groq";
   routingRevision?: string;
+  routingPolicy?: string;
   markdownDraft?: string;
   notesPlan?: {
     version: "bpe-v1";

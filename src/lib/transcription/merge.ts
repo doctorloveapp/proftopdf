@@ -32,6 +32,7 @@ export function mergeTranscripts(
       // Repeated explanations later in the lecture are preserved.
       if (
         previous &&
+        chunk.overlapSeconds > 0 &&
         previous.chunkId !== chunk.id &&
         start < previous.endSeconds + 0.05 &&
         previous.status !== "missing"

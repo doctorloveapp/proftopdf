@@ -25,6 +25,98 @@ import {
 } from "../../src/lib/server/operation-core";
 import { requestNotes } from "../../src/lib/client/notes";
 import { confirmedFreeUsage } from "../../src/lib/server/llm/usage-core";
+import { GROQ_MAX_WAIT_MS } from "../../src/lib/server/llm/cascade-core";
+
+test("Groq stays selected for 60/90 seconds and exactly 15 minutes; only greater waits reach OpenRouter", async () => {
+  const now = 1800000000000;
+  for (const wait of [
+    60_000,
+    90_000,
+    GROQ_MAX_WAIT_MS,
+    GROQ_MAX_WAIT_MS + 1,
+    12 * 3600_000,
+  ]) {
+    const calls: string[] = [];
+    const f = fixture(async (provider) => {
+      calls.push(provider);
+      if (provider === "groq")
+        throw new RouteError(
+          429,
+          "QUOTA_EXHAUSTED",
+          "Synthetic",
+          new Date(now + wait).toISOString(),
+        );
+      return output;
+    });
+    f.deps.now = () => now;
+    f.state.index = 1;
+    if (wait <= GROQ_MAX_WAIT_MS) {
+      await assert.rejects(() => runCascade(f.deps), { code: "LLM_QUOTA" });
+      assert.equal(f.state.index, 1);
+      assert.deepEqual(calls, ["groq"]);
+      assert.equal(f.state.groqLeg, 0);
+      // A persisted local denial remains the same idempotent leg on polling.
+      await assert.rejects(() => runCascade(f.deps), { code: "LLM_QUOTA" });
+      assert.equal(f.state.groqLeg, 0);
+    } else {
+      assert(!("state" in (await runCascade(f.deps))));
+      assert.deepEqual(calls, ["groq", "openrouter"]);
+    }
+  }
+});
+test("A received short Groq 429 waits then retries a new Groq leg; it never retries paid OpenAI or OpenRouter", async () => {
+  const calls: string[] = [];
+  const f = fixture(async (provider, leg) => {
+    calls.push(`${provider}:${leg}`);
+    if (calls.length === 1) throw rejected("PROVIDER_RATE_LIMIT");
+    return output;
+  });
+  f.state.index = 1;
+  await assert.rejects(() => runCascade(f.deps), { code: "LLM_QUOTA" });
+  const recovered = structuredClone(f.state);
+  f.deps.state = recovered;
+  await runCascade(f.deps);
+  assert.deepEqual(calls, ["groq:0", "groq:1"]);
+  assert.equal(recovered.usage.length, 1);
+});
+test("Definitive Groq service/auth/model failures reach OpenRouter, while unknown results stop", async () => {
+  for (const code of [
+    "PROVIDER_AUTH",
+    "PROVIDER_ACCESS_DENIED",
+    "PROVIDER_MODEL_UNAVAILABLE",
+    "PROVIDER_SERVICE_UNAVAILABLE",
+    "LLM_NOT_CONFIGURED",
+    "RESULT_UNCERTAIN",
+  ]) {
+    const calls: string[] = [];
+    const f = fixture(async (provider) => {
+      calls.push(provider);
+      if (provider === "groq") throw new RouteError(503, code, "Synthetic");
+      return output;
+    });
+    f.state.index = 1;
+    if (code === "RESULT_UNCERTAIN") {
+      await assert.rejects(() => runCascade(f.deps), { code });
+      assert.deepEqual(calls, ["groq"]);
+    } else {
+      await runCascade(f.deps);
+      assert.deepEqual(calls, ["groq", "openrouter"]);
+    }
+  }
+});
+test("A pending legacy cascade changes order without restarting an already attempted primary", async () => {
+  const calls: string[] = [];
+  const f = fixture(async (provider) => {
+    calls.push(provider);
+    return output;
+  });
+  delete f.state.policy;
+  delete f.state.groqLeg;
+  f.state.index = 1; // previously OpenRouter
+  await runCascade(f.deps);
+  assert.deepEqual(calls, ["groq"]);
+  assert.equal(f.saved.length, 1);
+});
 
 test("Free fallback usage requires explicit numeric zero cost; unknown or positive charges cannot pass as free", () => {
   assert.equal(confirmedFreeUsage({ total_tokens: 1200, cost: 0 }), 1200);
@@ -141,7 +233,7 @@ test("Definitive failures cascade over separate invocations, persisting before r
   const calls: string[] = [];
   const f = fixture(async (provider) => {
     calls.push(provider);
-    if (provider !== "groq") throw rejected();
+    if (provider !== "openrouter") throw rejected();
     return {
       ...output,
       usage: {
@@ -154,18 +246,18 @@ test("Definitive failures cascade over separate invocations, persisting before r
   });
   assert.deepEqual(await runCascade(f.deps), {
     state: "reroute",
-    provider: "openrouter",
+    provider: "groq",
   });
   assert.equal(f.state.index, 1);
   assert.equal(f.saved.length, 1);
   assert.equal(calls.length, 1);
   assert.deepEqual(await runCascade(f.deps), {
     state: "reroute",
-    provider: "groq",
+    provider: "openrouter",
   });
   const result = await runCascade(f.deps);
   assert(!("state" in result));
-  assert.deepEqual(calls, ["openai", "openrouter", "groq"]);
+  assert.deepEqual(calls, ["openai", "groq", "openrouter"]);
   assert.equal(result.usage?.legs?.length, 3);
   assert.equal(result.usage?.confirmedTokens, 1300);
 });
@@ -209,7 +301,7 @@ test("A large unit reaching Groq requests persisted rebatching rather than an ov
     state: "rebatch",
     provider: "groq",
   });
-  assert.equal(f.state.index, 2);
+  assert.equal(f.state.index, 1);
 });
 
 test("Rebatching preserves earlier provider usage instead of dropping it with the large parent", async () => {
@@ -218,10 +310,9 @@ test("Rebatching preserves earlier provider usage instead of dropping it with th
     throw new RouteError(413, "TOKEN_BUDGET", "Rebatch");
   });
   await runCascade(f.deps);
-  await runCascade(f.deps);
   const result = await runCascade(f.deps);
   assert("state" in result && result.state === "rebatch");
-  assert.equal(result.usage?.legs?.length, 2);
+  assert.equal(result.usage?.legs?.length, 1);
   assert.equal(result.usage?.confirmedTokens, 0);
 });
 test("Ledger includes known fallback tokens even when an earlier provider has unknown consumption", () => {

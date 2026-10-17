@@ -98,6 +98,8 @@ export default function ProcessingPanel({
   const transcript = useMemo(() => transcriptText(segments), [segments]);
   const completeAudio =
     local.manifest.chunks.length > 0 &&
+    local.manifest.chunks.at(-1)!.endSeconds >=
+      local.manifest.source.durationSeconds - 0.00001 &&
     local.manifest.chunks.every(
       (c) =>
         local.preparedChunkIds.includes(c.id) ||

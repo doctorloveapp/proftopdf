@@ -19,13 +19,15 @@ await mkdir("public/pdf", { recursive: true });
 await build({
   absWorkingDir: process.cwd(),
   tsconfigRaw: JSON.parse(await readFile("tsconfig.json", "utf8")),
-  entryPoints: [resolve("src/workers/pdf.worker.ts")],
-  outfile: resolve("public/pdf/pdf.worker.js"),
+  entryPoints: { "pdf.worker": resolve("src/workers/pdf.worker.ts") },
+  outdir: resolve("public/pdf"),
+  splitting: true,
+  chunkNames: "chunks/[name]-[hash]",
   bundle: true,
   platform: "browser",
   format: "esm",
   target: "es2022",
-  minify: false,
+  minify: true,
   legalComments: "linked",
   define: { "process.env.NODE_ENV": '"production"' },
 });
