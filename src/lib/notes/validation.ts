@@ -17,6 +17,8 @@ const fields = new Set([
   "coveredSourceIds",
   "chapters",
   "sectionIds",
+  "sourceNotes",
+  "sourceId",
 ]);
 export function schemaDiagnostics(
   issues: z.core.$ZodIssue[],

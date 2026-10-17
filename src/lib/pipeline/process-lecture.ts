@@ -119,6 +119,16 @@ export async function processLecture(
   current.processing ??= emptyProcessing();
   const data = current.processing,
     log = createAudioLog(current.job.id);
+  data.usageHistoryComplete ??= false;
+  // v5 persisted a future retryAt before any local quota-denied operation
+  // could start. Provider 429s incremented the attempt instead.
+  if (
+    current.job.retryAt &&
+    ["waiting-quota", "paused"].includes(current.job.stage) &&
+    data.failedUnitId &&
+    (data.attempts[data.failedUnitId] ?? 0) === 0
+  )
+    data.quotaBlockedUnitId ??= data.failedUnitId;
   const aborter = new AbortController(),
     combined = aborter.signal;
   const relay = () => aborter.abort(signal.reason);
@@ -152,6 +162,42 @@ export async function processLecture(
       );
     data.attempts[key] = attempt;
   }
+  async function waitForQuota(until: string, key: string) {
+    current.job.retryAt = until;
+    message = `Quota in attesa. Disponibile dal ${new Date(until).toLocaleString("it-IT")}`;
+    await save("waiting-quota");
+    const waitSeconds = Math.max(
+      0,
+      Math.ceil((Date.parse(until) - Date.now()) / 1000),
+    );
+    log("quota.wait", { unit: key, retryAt: until, waitSeconds });
+    if (waitSeconds > 120) {
+      message =
+        "Attesa lunga per la quota: lavoro salvato, puoi chiudere l’app e riprendere più tardi.";
+      log("quota.long-pause", { unit: key, retryAt: until, waitSeconds });
+      aborter.abort("long-quota");
+      abortIfNeeded(combined);
+    }
+    await adapter.wait(until, combined, emit);
+    current.job.retryAt = null;
+    message = "Quota disponibile, ripresa in corso";
+  }
+  async function recordUsage(
+    key: string,
+    attempt: number,
+    usage?: import("@/lib/shared/types").NotesUsage,
+  ) {
+    if (!usage) return;
+    data.notesUsage ??= {};
+    data.notesUsage[`${key}:a${attempt}`] = usage;
+    log("inference.usage", {
+      unit: key,
+      attempt,
+      reservedTokens: usage.reservedTokens,
+      confirmedTokens: usage.confirmedTokens ?? -1,
+    });
+    await save();
+  }
   async function request<T>(
     key: string,
     stage: "transcribing" | "generating-notes",
@@ -161,16 +207,16 @@ export async function processLecture(
     while (true) {
       abortIfNeeded(combined);
       if (current.job.retryAt && Date.now() < Date.parse(current.job.retryAt)) {
-        message = `Quota in attesa. Ripresa dalle ${new Date(current.job.retryAt).toLocaleTimeString("it-IT")}`;
-        await save("waiting-quota");
-        await adapter.wait(current.job.retryAt, combined, emit);
-        current.job.retryAt = null;
+        await waitForQuota(current.job.retryAt, key);
       }
+      delete data.quotaBlockedUnitId;
       await save(stage);
       const attempt = data.attempts[key] ?? 0;
       log("inference.start", { unit: key, attempt, stage });
       try {
         const result = await call(attempt);
+        if (stage === "generating-notes")
+          await recordUsage(key, attempt, (result as NotesOutput).usage);
         quotaChanged();
         log("inference.complete", { unit: key, attempt, stage });
         return result;
@@ -178,6 +224,8 @@ export async function processLecture(
         if (combined.aborted) throw error;
         quotaChanged();
         const known = error instanceof ClientApiError ? error : null;
+        if (stage === "generating-notes")
+          await recordUsage(key, attempt, known?.diagnostics?.usage);
         log(
           "inference.failed",
           {
@@ -193,13 +241,13 @@ export async function processLecture(
         );
         if (known?.status === 429 && known.retryAt) {
           if (known.code === "PROVIDER_RATE_LIMIT") increment(key);
-          current.job.retryAt = known.retryAt;
-          message = `Quota in attesa. Ripresa dalle ${new Date(known.retryAt).toLocaleTimeString("it-IT")}`;
-          await save("waiting-quota");
-          log("quota.wait", { unit: key, retryAt: known.retryAt });
-          await adapter.wait(known.retryAt, combined, emit);
-          current.job.retryAt = null;
-          message = "Quota disponibile, ripresa in corso";
+          else if (
+            ["QUOTA_EXHAUSTED", "RATE_LIMIT", "PROVIDER_COOLDOWN"].includes(
+              known.code,
+            )
+          )
+            data.quotaBlockedUnitId = key;
+          await waitForQuota(known.retryAt, key);
           continue;
         }
         // Definitive invalid output is different from a lost/ambiguous reply.
@@ -364,6 +412,15 @@ export async function processLecture(
         : {}),
     };
     data.notesPlan = await planNotes(segments, data, context, combined);
+    if (
+      data.failedUnitId === data.quotaBlockedUnitId &&
+      !data.notesPlan.units.some(
+        (unit) => `notes-${unit.id}` === data.failedUnitId,
+      )
+    ) {
+      delete data.failedUnitId;
+      delete data.quotaBlockedUnitId;
+    }
     const units = data.notesPlan.units;
     async function splitFailed(key: string, code: string) {
       if (

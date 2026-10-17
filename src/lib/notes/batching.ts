@@ -108,7 +108,11 @@ export async function planNotes(
       // Keep confirmed units and the operation whose result may be ambiguous.
       // Pack untouched consecutive work together, avoiding a tiny extra request
       // for the tail of EVERY old batch after a prompt/schema budget change.
-      if (data.notes[unit.id] || data.failedUnitId === `notes-${unit.id}`) {
+      if (
+        data.notes[unit.id] ||
+        (data.failedUnitId === `notes-${unit.id}` &&
+          data.failedUnitId !== data.quotaBlockedUnitId)
+      ) {
         await flushUntouched();
         units.push(unit);
       } else if (plan.splitDepths?.[unit.id]) {

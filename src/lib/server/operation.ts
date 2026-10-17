@@ -54,6 +54,7 @@ export async function runAiOperation<T>(
     cooldown = `proftopdf:v1:cooldown:${kind}`;
   return performOperation<T>(
     {
+      ...(kind === "notes" ? { notesReservation: cost } : {}),
       read: () => readCachedResult(kind, id, owner, fingerprint),
       reserve: async () => {
         // Cache replay precedes this guard, so a deployment changing the token

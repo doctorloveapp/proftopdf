@@ -149,8 +149,25 @@ export async function reserveQuota(
     throw new RouteError(
       429,
       "QUOTA_EXHAUSTED",
-      "Quota condivisa esaurita. Il lavoro può riprendere più tardi.",
+      "La quota residua non basta per questa richiesta. Il lavoro è salvato e può riprendere all’orario indicato.",
       new Date(result.retryAt!).toISOString(),
+      {
+        stage: "quota",
+        issueCount: 0,
+        issues: [],
+        quota: (result.windows ?? [])
+          .filter(
+            (window) =>
+              window.remaining < (window.resource === "requests" ? 1 : cost),
+          )
+          .map((window) => ({
+            ...window,
+            required: window.resource === "requests" ? 1 : cost,
+            retryAt: window.retryAt
+              ? new Date(window.retryAt).toISOString()
+              : null,
+          })),
+      },
     );
   return {
     acquired: result.kind === "acquired",

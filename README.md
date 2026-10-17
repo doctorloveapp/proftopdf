@@ -4,13 +4,14 @@
 
 ProfToPdf is a mobile-first web application with an Italian interface. It prepares audio on the device, transcribes small segments through Groq, organizes the transcript into chapters, and generates a searchable A4 PDF locally. It is designed for a private study group using **Vercel Hobby, Groq Free and Upstash Redis Free**, without paid API fallbacks or mandatory billing upgrades.
 
-**Status:** private beta. A short recording has completed the production workflow on Samsung S26 / Chrome. A 70-minute recording was fully transcribed; resuming after a schema fix recovered the third notes unit, but the fourth exhausted its source-coverage retries. This revision derives coverage from validated section citations, preserves speech uncertainty deterministically, and can split a failed batch into two smaller operations. The long production workflow must be retested after deployment. Safari/iPhone/iPad validation remains open.
+**Status:** private beta. A short recording has completed the production workflow on Samsung S26 / Chrome. A 70-minute recording was fully transcribed, but repeated notes-coverage failures consumed the available daily budget before PDF creation. This revision replaces model-managed citation lists with required per-source content, adds per-lesson token accounting and Screen Wake Lock, and automatically pauses long quota waits. The revised long workflow and Apple devices still require production acceptance testing.
 
 ## Capabilities
 
 - Audio selection from the phone or tablet, with drag-and-drop on supported devices.
 - A lesson library, editable title, optional subject, and daily quota bars separating used and reserved capacity.
 - Local audio preparation, progress by phase, quota countdowns, pause/resume, and IndexedDB persistence.
+- Screen Wake Lock during foreground processing and PDF generation, with clear fallback messages and automatic release on pause.
 - Timestamped transcript export, structured notes, Markdown editing, chapters, key concepts and a glossary.
 - Selectable PDF text, embedded local fonts, page numbers, a contents list, and support for accents and polytonic Greek glyphs.
 - Android installation prompt when available; contextual Safari installation instructions shown only on request.
@@ -38,7 +39,7 @@ flowchart LR
 
 The **original recording never passes through a Vercel Function**. The browser sends independently decodable segments below 3,200,000 bytes; the server validates their actual format and duration before reserving quota. This stays below Vercel's [4.5 MB Function payload limit](https://vercel.com/docs/functions/limitations) without introducing remote audio storage.
 
-The browser runs a sequential queue. Each Function handles one segment or text unit. Quota waits happen on the device after the Function returns; no background server process is kept alive for the duration of a lecture.
+The browser runs a sequential queue. Each Function handles one segment or text unit. Short quota waits happen on the device after the Function returns; waits longer than two minutes save the checkpoint and pause for later manual resumption; no background server process is kept alive for the duration of a lecture.
 
 | Component                 | Implementation                                                                              |
 | ------------------------- | ------------------------------------------------------------------------------------------- |
@@ -67,7 +68,9 @@ The application deliberately enforces lower limits than Groq's currently publish
 
 These are **shared rolling windows**, not per-student allocations or midnight resets. Overlap, new attempts and processing outside this application consume provider capacity. The quota bars cannot see external calls. A provider 429 introduces a shared cooldown. Groq limits apply at organization level; extra keys in the same organization do not increase capacity. See [Groq rate limits](https://console.groq.com/docs/rate-limits) and [billing information](https://console.groq.com/docs/billing-faqs).
 
-Atomic reservations use Redis TIME and are reconciled against confirmed provider usage. Text reservations count prompt and schema tokens, add 20% plus 512 tokens for framing/provider differences, and include the entire completion budget, including reasoning. This is a conservative tokenizer-based reservation, not a guarantee that arbitrary future provider accounting is identical. Unverified usage and ambiguous failures retain the reservation. SDK retries are disabled.
+The remaining quota must cover the **whole next reservation**, not merely be greater than zero. A green availability indicator is not a guarantee that an entire lecture fits. No quota is cleared to make a job appear successful.
+
+Atomic reservations use Redis TIME and are reconciled against confirmed provider usage. Text reservations count prompt and schema tokens, add 20% plus 512 tokens for framing/provider differences, and include the entire completion budget, including reasoning. Notes completion caps adapt to source count (1,080–2,400 tokens); outline requests allow 1,100 tokens. This is a conservative tokenizer-based reservation, not a guarantee that arbitrary future provider accounting is identical. Unverified usage and ambiguous failures retain the reservation. SDK retries are disabled.
 
 New notes batches target a reservation of at most **5,500 tokens**, including the repair prompt, and a JSON body below **14 KB**. The server independently enforces its configured quota and 16 KB JSON limit. Do not lower a custom minute allowance without checking that a single batch still fits.
 
@@ -110,7 +113,7 @@ On Windows, use `npm.cmd` if PowerShell blocks `npm.ps1`. This workspace follows
 ## Using ProfToPdf
 
 1. Sign in and choose **Nuova lezione** from **Le tue lezioni**. Select a recording, enter a useful title, optionally choose or type a subject, and press **Prepara la lezione**.
-2. When segmentation finishes, press **Trascrivi e crea il Pdf**. Keep the application visible. Progress and quota waits appear in the processing panel; confirmed results are saved after every unit.
+2. When segmentation finishes, press **Trascrivi e crea il Pdf**. Keep the application visible. Where supported, the screen stays awake automatically. Progress and quota waits appear in the processing panel; confirmed results are saved after every unit.
 3. Review the transcript and notes. Edit the Markdown if needed, save it, and press **Prepara PDF**. Download or open the generated file in the device's PDF viewer.
 4. Export important material before deleting a lesson or clearing browser storage. Deletion requires confirmation and interrupts local processing; an already submitted provider request can still consume quota.
 
@@ -122,11 +125,17 @@ Android installation uses the native browser prompt when it becomes available. S
 
 Use **Riprendi / recupera il risultato** on the same device and browser. Confirmed transcripts and notes are reused. A saved batch plan keeps operation IDs stable across reloads; upgrades preserve confirmed legacy notes and the legacy operation being repaired.
 
-Definitively invalid notes receive an automatic corrective attempt, within **three total attempts per operation**, with each new attempt persisted and quota-reserved. The model supplies academic content and its citations; the application derives `coveredSourceIds` from validated section references and adds warnings for every uncertain speech source. A missing redundant model summary or warning does not discard valid notes. Empty sections, unknown references and sources genuinely absent from the sections remain errors. Request-specific ID enums constrain model citations; they do not prove academic fidelity.
+The notes response has a **required object entry for every source**. The model supplies that source's paragraphs, bullets and concepts; each entry must contain nonblank substantive content. The application assembles one section per batch and attaches source references only after checking every entry. Missing or empty entries remain errors. Speech-uncertainty warnings are added deterministically. This removes repeated failures caused by omitted citation IDs without accepting absent content or claiming that schema compliance proves academic accuracy.
+
+Definitively invalid notes still receive a corrective attempt within **three total attempts per operation**, with each attempt persisted and quota-reserved. Prompt/schema changes resize only untouched work and locally quota-denied operations that never started. Confirmed notes and ambiguous operations keep their IDs and are not regenerated.
 
 After exhausted coverage/JSON attempts, or immediately for a truncated completion, a batch containing multiple sources can be split **once into two smaller operations**. The split and child IDs are saved before requests start, confirmed notes are preserved, and children cannot split recursively. Each child has its own quota-reserved attempts; the three-attempt ceiling applies per operation, not to the entire original group. A single-source failure or an unsuccessful child stops visibly. Provider JSON-generation failures are distinguished from rejected audio.
 
 Network ambiguity follows a different path: the application retrieves the **same operation** rather than silently launching another inference. If the result remains unavailable, a new attempt requires an explicit user action. The 15-minute cache and idempotency controls do not provide an unconditional exactly-once guarantee after lost responses or cache expiry.
+
+Quota waits up to two minutes resume automatically while the screen lock remains active. Longer waits checkpoint the job, show the retry date/time and pause; the screen lock is released and the app can be closed. Sign in again if needed and resume on the same device/browser after capacity returns. This does not refund earlier consumption or guarantee capacity if another request uses it first.
+
+[Screen Wake Lock](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API) requires HTTPS and a visible active page. The app requests it during audio/AI work and PDF rendering, releases it on stop/cleanup, and reacquires it on return to visibility when work is still active. Feature detection, rejection and OS revocation are logged. Power saving, low battery and operating-system policies may deny or revoke it; manual locking or switching apps can still suspend processing. The UI reports when the lock is unavailable.
 
 Whisper V3 recovery is explicit and shares the speech budget. Skipping a failed segment is also explicit: it remains a visible gap, the document is marked partial, and the segment can be recovered later.
 
@@ -134,9 +143,11 @@ The exported **checkpoint contains audio metadata only**. It does not contain au
 
 ## Diagnostics and timing
 
-**Scarica log diagnostico** exports a JSON report containing client revision, browser/device details, technical progress events, quota waits, error codes and safe validation diagnostics. For example, an invalid field can identify `sections.0.paragraphs` and the expected type without copying the model's response. Coverage failures report separate counts and numeric paths for missing sources, empty citation lists and unknown references; unexpected ID values are excluded. `notes.split` records bounded recovery, and `notes.saved` includes source/uncertainty counts.
+**Scarica log diagnostico** exports a JSON report containing client revision, browser/device details, technical progress events, quota waits, error codes and safe validation diagnostics. For example, an invalid field can identify `sections.0.paragraphs` and the expected type without copying the model's response. Coverage failures report separate counts and numeric paths for missing sources, empty citation lists and unknown references; unexpected ID values are excluded. `notes.split` records bounded recovery, and `notes.saved` includes source/uncertainty counts. `inference.usage` records reserved and confirmed token counts; quota errors identify the blocking window and required/residual capacity. `quota.long-pause` records a saved long wait; `wake.*` events record lock acquisition, denial and release.
 
-Logs exclude credentials, cookies, recording contents, transcript text, titles and filenames. They are never uploaded automatically. Retention is five lessons and 200 events per lesson, with an additional size bound; `droppedEvents` records trimming. The current client revision is `notes-coverage-2026-10-17-v5`. Console events use `[ProfToPdf audio]`.
+Logs exclude credentials, cookies, recording contents, transcript text, titles and filenames. They are never uploaded automatically. Retention is five lessons and 200 events per lesson, with an additional size bound; `droppedEvents` records trimming. The current client revision is `notes-sources-wake-2026-10-17-v6`. Console events use `[ProfToPdf audio]`.
+
+Exports also contain `aiUsageSummary`: `confirmedTokens`, `reservedUnverifiedTokens`, `trackedOperations` and `historyComplete`. The per-operation ledger lives with the IndexedDB lesson and survives event trimming; cache replay of the same operation/attempt does not count twice. Old lessons are explicitly marked as incomplete history because earlier token usage cannot be reconstructed reliably.
 
 Every export ends with `timingSummary`:
 
@@ -152,20 +163,22 @@ Every export ends with `timingSummary`:
 }
 ```
 
-This example illustrates the format, not a 70-minute performance promise. Totals include quota waits during active processing, failed attempts and subsequent PDF regeneration. They exclude manual gaps between commands, paused intervals and time with the page closed. Timing counters survive event trimming; incomplete historical evidence is labelled partial. Export the diagnostic log before retrying after a failure.
+This example illustrates the format, not a 70-minute performance promise. Totals include quota waits during active processing, failed attempts and subsequent PDF regeneration. They exclude manual gaps between commands, paused intervals (including automatic long-quota pauses) and time with the page closed. Thus it measures cumulative processing activity, not calendar time from the first click to the eventual download; a 12-hour quota pause remains a 12-hour practical delay. Timing counters survive event trimming; incomplete historical evidence is labelled partial. Export the diagnostic log before retrying after a failure.
 
 ## Validation
 
-As of **17 October 2026**, the automated suite contains **77 passing tests**. Coverage includes quota/idempotency behavior, audio boundaries, interrupted jobs, deletion races, storage leases, language policies, PDF identity, timing, schema failures and safe diagnostics. Regressions cover both long-job failures: 33 saved transcripts, preserved notes, quota waits, bounded splitting of the exhausted fourth group, pause/reload, immediate recovery from truncation, and no splitting or new attempts for ambiguous responses.
+As of **17 October 2026**, the automated suite contains **85 passing tests**. Regressions cover saved long transcripts/notes, bounded repairs, missing/blank source entries, unknown-reference privacy, quota pause/resume, token accounting, and wake-lock acquisition, visibility, cleanup, denial and revocation, alongside audio, session, storage and PDF checks.
 
-| Evidence                         | Verified                                                                                                                                                     | Still required                                                                     |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Samsung S26 / Chrome, production | Login/session; complete short lecture to PDF; real MP3 preparation; 33/33 long transcripts; third notes unit recovered                                       | Fourth group failed coverage in v4; v5 recovery and long PDF need retesting        |
-| Local checks                     | Unit tests, TypeScript/configuration/secret checks, production compilation                                                                                   | These do not prove mobile runtime behavior                                         |
-| Real Groq + Redis integration    | Earlier synthetic spoken sample; v5: 20 distinct synthetic sources, seven uncertain, all retained after one truncation/split; valid outline and cache replay | Actual long-lecture notes and academic fidelity review                             |
-| PDF worker                       | Earlier synthetic 13-page visual verification, including polytonic Greek                                                                                     | Safari download/open behavior and real long-document review                        |
-| Apple devices                    | Implementation and non-browser checks                                                                                                                        | iPhone/iPad Safari, M4A/AAC, installation, suspension, reload and PDF download     |
-| Capacity                         | Local synthetic 70-minute text batching benchmark                                                                                                            | Two-hour/90 MB devices; Redis/Vercel monthly usage and a sustainable usage ceiling |
+| Evidence                         | Verified                                                                                                                                                   | Still required                                                                      |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Samsung S26 / Chrome, production | Login/session; short lecture to PDF; 33/33 long transcripts; v5 progressed further but reached a daily notes quota wait after 37m 9s cumulative processing | v6 long PDF, fidelity review and actual duration/cost                               |
+| Local checks                     | Unit tests, TypeScript/configuration/credential checks, production compilation                                                                             | Mobile runtime behavior                                                             |
+| Real Groq + Redis integration    | v6: two synthetic physics sources, one uncertain; complete content map, one section, 1,170 confirmed tokens, cache replay without additional consumption   | A full long lecture under the new contract; these were text probes, not audio tests |
+| PDF worker                       | Earlier synthetic 13-page visual verification including polytonic Greek                                                                                    | Actual long PDF; Apple download/opening                                             |
+| Apple devices                    | Implementation and non-browser checks                                                                                                                      | Safari, M4A/AAC, install, wake lock, suspension, reload and downloads               |
+| Capacity                         | Synthetic 70-minute batching benchmark: 20–21 notes calls + one outline, 106,540–117,344 total maximum reservations                                        | Real 70-minute completion, two-hour/90 MB devices and monthly hosting/Redis usage   |
+
+The synthetic timing model allows 230 seconds for preparation/transcription, 60 seconds per notes/outline request including short quota waits, and 12 seconds for PDF: **25–26 minutes** across 5,600–9,800 words. A practical estimate is **25–30 minutes**, conditional on sufficient starting capacity, successful outputs and a visible active page. It is not a measured long-audio result or a guarantee; retries, dense material, slow networks or pre-used quota can exceed 30 minutes. The existing job has already consumed its earlier budget and must wait for rolling capacity to return.
 
 Useful commands:
 
@@ -175,6 +188,8 @@ Useful commands:
 | `npm test`                        | Local automated suite; no provider calls                                                                                    |
 | `npm run build`                   | Production build and generated assets                                                                                       |
 | `npm run benchmark:notes`         | Synthetic 70-minute text batch counts; local only                                                                           |
+| `npm run inspect:quota`           | Read-only live application quota audit, aggregated without operation IDs; no provider inference                             |
+| `npm run verify:source-contract`  | **Uses real Groq/Redis quota:** one small two-source text request and cache replay, with capacity preflight                 |
 | `npm run verify:notes`            | **Uses real Groq/Redis quota:** diverse synthetic physics sources, uncertainty, bounded splitting, outline and cache replay |
 | `npm run verify:processing`       | **Uses real Groq/Redis quota:** requires a locally supplied short synthetic spoken WAV                                      |
 | `npm run verify:audio-validation` | Native FFmpeg format validation with generated tones                                                                        |
@@ -185,9 +200,9 @@ Cloud checks require a configured private `.env`. Do not repeatedly consume quot
 ## Production acceptance checks
 
 1. Deploy the revision, reload the HTTPS application, sign in and inspect remaining quotas. After starting/resuming processing, confirm the new diagnostic revision above; a previously exported log retains its older revision.
-2. **Resume the previously failed long lesson first.** Use **Riprendi / recupera il risultato** even if the old fourth group has exhausted its three attempts. Confirm that the 33 saved transcripts and first three notes units are reused, a `notes.split` event replaces the exhausted group, and the PDF is downloadable. Export the new log. Do not authorize a fourth attempt on the old operation or clear browser storage.
-3. Then run a **new lesson from the original recording** with sufficient unused quota. Keep the screen active, avoid manual pauses, export the final log and review the complete transcript/PDF. This is the valid full-pipeline timing benchmark; a resumed job's cumulative time also includes its earlier failure.
-4. Test pause/reload/resume, loss of network, quota waits, two-tab ownership and deletion during active work. Deleted lessons must not return after a late response.
+2. **Resume the existing long lesson first when quota is sufficient.** The 33 saved transcripts and confirmed notes are reused. The old quota-denied unit may be resized to the new schema budget; ambiguous operations remain unchanged. Confirm the new revision, `wake.held` (or a specific fallback), `inference.usage`, successful PDF download and the exported log. Do not clear browser storage or create a fresh copy just to bypass a quota wait. A saved future retry date can immediately pause again without another AI call.
+3. For a separate full-duration measurement, create a **new lesson from the original recording** only with sufficient unused capacity (the synthetic maximum-reservation benchmark needs roughly 107–117k tokens before a retry margin). Avoid manual pauses, export the log and review the complete transcript/PDF. The resumed job's cumulative time includes its earlier failures and has incomplete historical token accounting.
+4. Test pause/reload/resume, loss of network, short automatic quota waits, long saved quota pauses, wake-lock release on pause/completion, two-tab ownership and deletion during active work. Deleted lessons must not return after a late response.
 5. On iPhone/iPad, test Safari and installation separately with a short M4A first, then the long recording. Check file selection, WASM loading, background suspension, local storage and PDF download/opening.
 6. Compare short mixed Italian/English, Latin and school Ancient Greek samples against the source. Finally test the two-hour/90 MB boundary and review infrastructure dashboards.
 

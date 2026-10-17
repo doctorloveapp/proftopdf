@@ -89,7 +89,17 @@ export async function POST(request: NextRequest) {
           throw error;
         }
         return {
-          data: result,
+          data: {
+            ...result,
+            usage: {
+              reservedTokens: payload.tokenUpperBound,
+              confirmedTokens: Number.isSafeInteger(
+                response.usage?.total_tokens,
+              )
+                ? response.usage!.total_tokens
+                : null,
+            },
+          },
           actual: response.usage?.total_tokens ?? payload.tokenUpperBound,
         };
       },

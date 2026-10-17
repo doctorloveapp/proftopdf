@@ -55,9 +55,9 @@ for (const wordsPerMinute of [80, 110, 140]) {
     legacy.flatMap((unit) => unit.sources),
   );
   assert(payloads.every((payload) => payload.tokenUpperBound <= 5500));
-  // Outline count is model-dependent: 4 sections, as in the dense live probe.
+  // The source-map contract assembles exactly one section per batch.
   const titles = plan.units.flatMap((unit) =>
-    Array.from({ length: 4 }, (_, i) => ({
+    Array.from({ length: 1 }, (_, i) => ({
       id: `${unit.id}-s${i}`,
       text: `Dinamica, lavoro ed energia: argomento ${i + 1}`,
       uncertain: false,
@@ -72,6 +72,24 @@ for (const wordsPerMinute of [80, 110, 140]) {
     legacyNoteRequests: legacy.length,
     newNoteRequests: plan.units.length,
     hypotheticalOutlineRequests: outlines.length,
+    totalNotesReservation: payloads.reduce(
+      (sum, p) => sum + p.tokenUpperBound,
+      0,
+    ),
+    totalWithOutlineReservation:
+      payloads.reduce((sum, p) => sum + p.tokenUpperBound, 0) +
+      outlines.reduce(
+        (sum, unit) =>
+          sum +
+          buildNotesRequest({
+            ...context,
+            mode: "outline",
+            attempt: 2,
+            unitId: unit.id,
+            sources: unit.sources,
+          }).tokenUpperBound,
+        0,
+      ),
     planningMilliseconds: Math.round(performance.now() - start),
     largestReservation: Math.max(...payloads.map((p) => p.tokenUpperBound)),
     oneRequestPerMinuteTotalMinutes:
@@ -85,7 +103,7 @@ const report = {
     "local synthetic Italian physics text, not a real audio/provider timing test",
   durationMinutes: 70,
   timingModel:
-    "Synthetic text distributed across 250 speech segments, matching the real log's segment count. Observed preparation + STT rounded to 230 seconds; deliberately allow 60 seconds per notes/outline request; 12 seconds PDF. Empty initial quota; no errors or manual pause; hypothetical 4 sections per batch, as in the dense synthetic live probe.",
+    "Synthetic text distributed across 250 speech segments, matching the real log's segment count. Observed preparation + STT rounded to 230 seconds; deliberately allow 60 seconds per notes/outline request; 12 seconds PDF. Empty initial quota; no errors or manual pause; exactly one section per source-map batch. Reservation totals include input safety margin and maximum completion, not just expected actual consumption.",
   scenarios,
 };
 await mkdir("docs", { recursive: true });

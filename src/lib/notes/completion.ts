@@ -5,6 +5,7 @@ import {
 } from "@/lib/shared/processing";
 import { validateNotesOutput } from "./request";
 import { outputError } from "./validation";
+import { sourceMapOutput } from "./source-contract";
 
 /** No partial JSON, guessed fields, text excerpts or model-error strings. */
 export function acceptNotesCompletion(
@@ -55,5 +56,12 @@ export function acceptNotesCompletion(
       },
     );
   }
-  return validateNotesOutput(input, raw);
+  const mapped =
+    input.mode === "notes" &&
+    raw &&
+    typeof raw === "object" &&
+    "sourceNotes" in raw
+      ? sourceMapOutput(input, raw)
+      : raw;
+  return validateNotesOutput(input, mapped);
 }

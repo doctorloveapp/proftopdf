@@ -27,6 +27,7 @@ import type { ProcessingOptions } from "@/lib/pipeline/process-lecture";
 import { MAX_ATTEMPTS } from "@/lib/shared/processing";
 import { documentFileStem } from "@/lib/pdf/naming";
 import { scrollToControl } from "@/lib/client/scroll";
+import { useScreenWakeLock, wakeLockMessage } from "@/hooks/useScreenWakeLock";
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob),
@@ -60,6 +61,7 @@ export default function ProcessingPanel({
     local.pdfExport?.timingSummary ?? null,
   );
   const pdfController = useRef<AbortController | null>(null);
+  const pdfWakeStatus = useScreenWakeLock(pdfBusy, local.job.id);
   const mounted = useRef(true);
   const data = local.processing,
     lecture = data?.document;
@@ -274,6 +276,14 @@ export default function ProcessingPanel({
               ? "Riprendi / recupera il risultato"
               : "Trascrivi e crea il Pdf"}
           </button>
+          {local.job.retryAt && (
+            <p className="local-note" role="status">
+              Quota disponibile dal{" "}
+              {new Date(local.job.retryAt).toLocaleString("it-IT")}. Il lavoro è
+              salvato. Le attese oltre due minuti mettono l’app in pausa; puoi
+              chiuderla e premere Riprendi più tardi.
+            </p>
+          )}
           {failed && hasFailure && (
             <div className="recovery-actions">
               <p className="local-note">
@@ -421,6 +431,7 @@ export default function ProcessingPanel({
               className="progress-card"
               role="status"
             >
+              <p>{wakeLockMessage(pdfWakeStatus)}</p>
               <strong>Preparazione del PDF sul dispositivo…</strong>
               <progress aria-label="Creazione PDF" />
               <p>Appena pronto troverai qui il pulsante Scarica PDF.</p>

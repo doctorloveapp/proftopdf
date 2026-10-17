@@ -12,6 +12,7 @@ import QuotaMeter from "./QuotaMeter";
 import ProcessingPanel from "./ProcessingPanel";
 import { SUBJECTS } from "@/lib/shared/lecture";
 import { scrollToControl } from "@/lib/client/scroll";
+import { useScreenWakeLock, wakeLockMessage } from "@/hooks/useScreenWakeLock";
 
 const labels: Partial<Record<ProcessingStage, string>> = {
   selected: "Da preparare",
@@ -54,6 +55,10 @@ export default function StudioWorkspace({
     checkpointPicker = useRef<HTMLInputElement>(null);
   const selected = state.jobs.find(
     (entry) => entry.job.id === state.selectedId,
+  );
+  const wakeStatus = useScreenWakeLock(
+    state.busy,
+    state.selectedId ?? undefined,
   );
   async function refreshQuota() {
     setLoadingQuota(true);
@@ -201,9 +206,18 @@ export default function StudioWorkspace({
     if (!selected) return;
     try {
       const url = URL.createObjectURL(
-        new Blob([exportAudioLog(selected.job.id)], {
-          type: "application/json",
-        }),
+        new Blob(
+          [
+            exportAudioLog(
+              selected.job.id,
+              selected.processing?.notesUsage,
+              selected.processing?.usageHistoryComplete,
+            ),
+          ],
+          {
+            type: "application/json",
+          },
+        ),
       );
       const link = document.createElement("a");
       link.href = url;
@@ -384,7 +398,7 @@ export default function StudioWorkspace({
             <p className="local-note">
               {!quotas.transcription.available || !quotas.notes.available
                 ? "Alcune elaborazioni non sono disponibili ora. Puoi comunque preparare l’audio localmente."
-                : "Quote condivise tra gli utenti su finestre mobili: si liberano progressivamente, senza reset a mezzanotte. La parte tratteggiata indica prenotazioni ancora conteggiate."}
+                : "Quote condivise tra gli utenti su finestre mobili: si liberano progressivamente, senza reset a mezzanotte. La parte tratteggiata indica prenotazioni ancora conteggiate. La quota residua deve bastare per l’intera richiesta successiva."}
             </p>
           )}
         </section>
@@ -597,8 +611,15 @@ export default function StudioWorkspace({
                       ? "Appunti salvati. Puoi modificarli e scaricare il PDF."
                       : selected?.job.stage === "ready"
                         ? "Puoi avviare la trascrizione e creare la dispensa."
-                        : "Per riprendere, seleziona la stessa registrazione."}
+                        : selected?.job.retryAt
+                          ? `Quota insufficiente: lavoro salvato. Riprendi dal ${new Date(selected.job.retryAt).toLocaleString("it-IT")}. Puoi chiudere l’app durante l’attesa.`
+                          : selected?.processing
+                            ? "Il lavoro è salvato: usa Riprendi per continuare."
+                            : "Per riprendere, seleziona la stessa registrazione."}
                 </p>
+                {state.busy && (
+                  <p className="local-note">{wakeLockMessage(wakeStatus)}</p>
+                )}
                 {state.busy && (
                   <div className="job-actions">
                     <button

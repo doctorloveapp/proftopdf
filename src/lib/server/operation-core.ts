@@ -10,6 +10,7 @@ interface Failure {
 }
 type Outcome<T> = { ok: true; data: T } | { ok: false; error: Failure };
 export interface OperationDependencies {
+  notesReservation?: number;
   read<T>(): Promise<Outcome<T> | null>;
   reserve(): Promise<{ acquired: boolean; status: string }>;
   cache(value: unknown): Promise<boolean>;
@@ -57,6 +58,25 @@ export async function performOperation<T>(
     result = await provider();
   } catch (error) {
     const failure = await dependencies.providerError(error);
+    if (dependencies.notesReservation !== undefined) {
+      const actual =
+        error instanceof RouteError ? error.confirmedUsage : undefined;
+      failure.diagnostics = {
+        stage: "provider",
+        issueCount: 0,
+        issues: [],
+        ...failure.diagnostics,
+        usage: {
+          reservedTokens: dependencies.notesReservation,
+          confirmedTokens:
+            Number.isSafeInteger(actual) &&
+            actual! >= 0 &&
+            actual! <= dependencies.notesReservation
+              ? actual!
+              : null,
+        },
+      };
+    }
     await dependencies
       .cache({
         ok: false,

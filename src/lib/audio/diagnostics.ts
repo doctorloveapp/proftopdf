@@ -9,7 +9,7 @@ import {
   type TimingSummary,
 } from "./timing";
 
-export const AUDIO_REVISION = "notes-coverage-2026-10-17-v5";
+export const AUDIO_REVISION = "notes-sources-wake-2026-10-17-v6";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;
@@ -141,7 +141,30 @@ export function createAudioLog(
     });
   };
 }
-export function exportAudioLog(jobId: string) {
+export function summarizeNotesUsage(
+  ledger: Record<string, import("@/lib/shared/types").NotesUsage> = {},
+  historyComplete = false,
+) {
+  const values = Object.values(ledger);
+  return {
+    trackedOperations: values.length,
+    historyComplete,
+    confirmedTokens: values.reduce(
+      (sum, value) => sum + (value.confirmedTokens ?? 0),
+      0,
+    ),
+    reservedUnverifiedTokens: values.reduce(
+      (sum, value) =>
+        sum + (value.confirmedTokens === null ? value.reservedTokens : 0),
+      0,
+    ),
+  };
+}
+export function exportAudioLog(
+  jobId: string,
+  ledger?: Record<string, import("@/lib/shared/types").NotesUsage>,
+  historyComplete = false,
+) {
   const report = reports().find((r) => r.jobId === jobId);
   if (!report)
     throw new Error(
@@ -152,6 +175,7 @@ export function exportAudioLog(jobId: string) {
     {
       ...publicReport,
       exportedAt: new Date().toISOString(),
+      aiUsageSummary: summarizeNotesUsage(ledger, historyComplete),
       timingSummary: timingSummary(
         state ?? recoverTiming(report.events, report.droppedEvents),
       ),

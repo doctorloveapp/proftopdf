@@ -128,10 +128,24 @@ export interface AppError {
   diagnostics?: ErrorDiagnostics;
 }
 /** Schema locations/codes only. Never content, raw model errors or credentials. */
+export interface NotesUsage {
+  reservedTokens: number;
+  confirmedTokens: number | null;
+}
 export interface ErrorDiagnostics {
-  stage: "structure" | "content" | "coverage" | "json" | "completion" | "size";
+  stage:
+    | "structure"
+    | "content"
+    | "coverage"
+    | "json"
+    | "completion"
+    | "size"
+    | "quota"
+    | "provider";
   issueCount: number;
   issues: { path: string; code: string; expected?: string }[];
+  usage?: NotesUsage;
+  quota?: (QuotaWindow & { required: number })[];
   coverage?: {
     sourceCount: number;
     missingSectionSourceCount: number;

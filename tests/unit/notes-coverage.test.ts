@@ -129,11 +129,15 @@ test("Coverage diagnostics distinguish missing, empty and unknown citations with
 test("Provider schema constrains academic citations and leaves derived coverage/STT metadata to the app", () => {
   const schema = buildNotesRequest(input).response_format.json_schema
     .schema as any;
-  for (const key of ["sections", "glossary"])
-    assert.deepEqual(
-      schema.properties[key].items.properties.sourceIds.items.enum,
-      input.sources.map((s) => s.id),
-    );
+  assert.deepEqual(
+    schema.properties.sourceNotes.required,
+    input.sources.map((s) => s.id),
+  );
+  assert.equal(schema.properties.sourceNotes.additionalProperties, false);
+  assert.deepEqual(
+    schema.properties.glossary.items.properties.sourceId.enum,
+    input.sources.map((s) => s.id),
+  );
   assert.equal(schema.properties.coveredSourceIds, undefined);
   assert.equal(schema.properties.uncertainties, undefined);
   const {
@@ -223,4 +227,14 @@ test("Prompt-budget upgrades repack untouched work while preserving confirmed un
   data.failedUnitId = "notes-old-large-batch";
   const ambiguous = await planNotes(segments, data, context);
   assert.equal(ambiguous.units[0].id, "old-large-batch");
+  // A rejected local reservation never started upstream, so this unit may be
+  // resized to the new schema budget; confirmed/ambiguous units may not.
+  data.quotaBlockedUnitId = data.failedUnitId;
+  const quotaBlocked = await planNotes(segments, data, context);
+  assert(quotaBlocked.units.length > 1);
+  assert(quotaBlocked.units.every((unit) => unit.id !== "old-large-batch"));
+  assert.deepEqual(
+    quotaBlocked.units.flatMap((unit) => unit.sources),
+    sources,
+  );
 });

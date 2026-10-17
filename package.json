@@ -23,6 +23,8 @@
     "verify:audio-validation": "node --import tsx scripts/verify-audio-validation.mts",
     "verify:processing": "node --conditions=react-server --import tsx scripts/verify-processing.mts",
     "verify:notes": "node --conditions=react-server --import tsx scripts/verify-notes.mts",
+    "verify:source-contract": "node --conditions=react-server --import tsx scripts/verify-source-contract.mts",
+    "inspect:quota": "node --conditions=react-server --import tsx scripts/inspect-quota.mts",
     "benchmark:notes": "node --import tsx scripts/benchmark-notes.mts",
     "verify:pdf": "node scripts/verify-pdf.mjs",
     "assets:generate": "node scripts/generate-brand-assets.mjs",

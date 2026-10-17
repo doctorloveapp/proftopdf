@@ -108,6 +108,117 @@ const syntheticNotes = (ids: string[]): NotesOutput => ({
   coveredSourceIds: ids,
 });
 
+test("A 12-hour quota denial checkpoints and pauses without holding a timer; saved long waits make no upstream request", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture();
+  await saveJob(local);
+  const retryAt = new Date(Date.now() + 12 * 3600_000).toISOString();
+  let calls = 0;
+  const adapter: ProcessingAdapter = {
+    transcribe: async () => {
+      throw new Error("Do not resend confirmed audio");
+    },
+    notes: async () => {
+      calls++;
+      throw new ClientApiError("Quota", 429, retryAt, "QUOTA_EXHAUSTED");
+    },
+    wait: async () => {
+      throw new Error("Long waits must release the screen and session");
+    },
+  };
+  try {
+    const first = await processLecture(
+      local,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      adapter,
+    );
+    assert.equal(first.job.stage, "paused");
+    assert.equal(first.job.retryAt, retryAt);
+    assert.equal(first.job.error, null);
+    assert.equal(calls, 1);
+    assert.equal(Object.keys(first.processing!.transcripts).length, 33);
+    assert.equal(
+      first.processing!.quotaBlockedUnitId,
+      first.processing!.failedUnitId,
+    );
+    const resumed = await processLecture(
+      first,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      adapter,
+    );
+    assert.equal(resumed.job.stage, "paused");
+    assert.equal(resumed.job.retryAt, retryAt);
+    assert.equal(calls, 1);
+  } finally {
+    await removeJob(local.job.id);
+  }
+});
+
+test("Confirmed notes token usage persists by operation/attempt and survives resuming without duplicate counts", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture();
+  await saveJob(local);
+  const controller = new AbortController();
+  let calls = 0;
+  const adapter: ProcessingAdapter = {
+    transcribe: async () => {
+      throw new Error("No audio calls");
+    },
+    notes: async (input) => {
+      calls++;
+      if (calls === 2) {
+        controller.abort();
+        throw new DOMException("Pause", "AbortError");
+      }
+      return {
+        ...syntheticNotes(input.sources.map((source) => source.id)),
+        usage: { reservedTokens: 5000, confirmedTokens: 1500 },
+      };
+    },
+    wait: async () => {},
+  };
+  try {
+    const result = await processLecture(
+      local,
+      "synthetic",
+      controller.signal,
+      () => {},
+      {},
+      adapter,
+    );
+    assert.equal(result.job.stage, "paused");
+    assert.equal(Object.keys(result.processing!.notesUsage!).length, 1);
+    assert.equal(
+      Object.values(result.processing!.notesUsage!)[0].confirmedTokens,
+      1500,
+    );
+    const stopped = new AbortController();
+    stopped.abort();
+    const resumed = await processLecture(
+      result,
+      "synthetic",
+      stopped.signal,
+      () => {},
+      {},
+      adapter,
+    );
+    assert.deepEqual(
+      resumed.processing!.notesUsage,
+      result.processing!.notesUsage,
+    );
+  } finally {
+    await removeJob(local.job.id);
+  }
+});
+
 test("An exhausted fourth notes batch splits once on resume, persists children before requests and survives a pause without resending confirmed work", async (t) => {
   t.mock.method(console, "info", () => {});
   t.mock.method(console, "error", () => {});

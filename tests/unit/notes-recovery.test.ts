@@ -197,6 +197,7 @@ test("A definitive invalid completion is cached with diagnostics and charged onl
     ],
   };
   const deps: OperationDependencies = {
+    notesReservation: 1000,
     read: async () => cache as never,
     reserve: async () => ({
       acquired: ++reservations === 1,
@@ -225,11 +226,17 @@ test("A definitive invalid completion is cached with diagnostics and charged onl
   };
   await assert.rejects(() => performOperation(deps, provider), {
     code: "NOTES_INVALID",
-    diagnostics,
+    diagnostics: {
+      ...diagnostics,
+      usage: { reservedTokens: 1000, confirmedTokens: 321 },
+    },
   });
   await assert.rejects(() => performOperation(deps, provider), {
     code: "NOTES_INVALID",
-    diagnostics,
+    diagnostics: {
+      ...diagnostics,
+      usage: { reservedTokens: 1000, confirmedTokens: 321 },
+    },
   });
   assert.equal(settled, 321);
   assert.equal(providers, 1);

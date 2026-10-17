@@ -1,12 +1,12 @@
 import { z } from "zod";
-import type { LectureDocument } from "./types";
+import type { LectureDocument, NotesUsage } from "./types";
 
 export const PROCESSING_REVISION = "pipeline-2026-10-16-v1";
 export const NOTES_SOURCE_BYTES = 1200;
 export const NOTES_MAX_OUTPUT = 2400;
 export const MAX_ATTEMPTS = 3;
 export const NOTES_RESULT_BYTES = 44_000;
-export const NOTES_BUDGET_REVISION = "coverage-v2";
+export const NOTES_BUDGET_REVISION = "source-map-v1";
 export const STT_UNCERTAINTY_NOTICE =
   "Questo passaggio della trascrizione è segnalato come incerto: confrontalo con la registrazione originale prima di studiarlo.";
 export const REPAIRABLE_NOTES_CODES = new Set([
@@ -76,7 +76,9 @@ export const notesOutputSchema = z
     coveredSourceIds: z.array(z.string()),
   })
   .strict();
-export type NotesOutput = z.infer<typeof notesOutputSchema>;
+export type NotesOutput = z.infer<typeof notesOutputSchema> & {
+  usage?: NotesUsage;
+};
 export const outlineOutputSchema = z
   .object({
     chapters: z.array(
@@ -89,7 +91,9 @@ export const outlineOutputSchema = z
     ),
   })
   .strict();
-export type OutlineOutput = z.infer<typeof outlineOutputSchema>;
+export type OutlineOutput = z.infer<typeof outlineOutputSchema> & {
+  usage?: NotesUsage;
+};
 export interface ChunkTranscript {
   sha256: string;
   model: string;
@@ -107,6 +111,9 @@ export interface ProcessingData {
   document?: LectureDocument;
   failedChunkIndex?: number;
   failedUnitId?: string;
+  quotaBlockedUnitId?: string;
+  notesUsage?: Record<string, NotesUsage>;
+  usageHistoryComplete?: boolean;
   markdownDraft?: string;
   notesPlan?: {
     version: "bpe-v1";
@@ -124,6 +131,8 @@ export function emptyProcessing(): ProcessingData {
     accurateChunks: [],
     notes: {},
     outlines: {},
+    notesUsage: {},
+    usageHistoryComplete: true,
   };
 }
 export const utf8Bytes = (value: string) =>
