@@ -16,6 +16,7 @@ export const REPAIRABLE_NOTES_CODES = new Set([
   "NOTES_CONTENT",
   "NOTES_COVERAGE",
   "NOTES_TRUNCATED",
+  "NOTES_SIZE",
 ]);
 export const idSchema = z.string().uuid();
 export const sourceItemSchema = z
@@ -94,6 +95,15 @@ export const outlineOutputSchema = z
 export type OutlineOutput = z.infer<typeof outlineOutputSchema> & {
   usage?: NotesUsage;
 };
+export const LLM_ROUTING_REVISION = "cascade-luna-v1";
+export type NotesRemote =
+  | NotesOutput
+  | OutlineOutput
+  | {
+      state: "reroute";
+      provider: import("./types").LlmProvider;
+    }
+  | { state: "rebatch"; provider: "groq"; usage?: NotesUsage };
 export interface ChunkTranscript {
   sha256: string;
   model: string;
@@ -114,6 +124,8 @@ export interface ProcessingData {
   quotaBlockedUnitId?: string;
   notesUsage?: Record<string, NotesUsage>;
   usageHistoryComplete?: boolean;
+  notesBudgetProfile?: "large" | "groq";
+  routingRevision?: string;
   markdownDraft?: string;
   notesPlan?: {
     version: "bpe-v1";

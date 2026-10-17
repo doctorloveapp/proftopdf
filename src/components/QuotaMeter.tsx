@@ -14,7 +14,11 @@ export default function QuotaMeter({
   const format = (value: number) =>
     window.resource === "audio-seconds"
       ? `${(value / 60).toLocaleString("it-IT", { maximumFractionDigits: 1 })} min`
-      : `${value.toLocaleString("it-IT")} token`;
+      : window.resource === "micro-usd"
+        ? `$${(value / 1e6).toFixed(3)}`
+        : window.resource === "requests"
+          ? `${value.toLocaleString("it-IT")} richieste`
+          : `${value.toLocaleString("it-IT")} token`;
   return (
     <div className={`quota-meter ${consumed >= 90 ? "quota-near-limit" : ""}`}>
       <div className="quota-meter-label">

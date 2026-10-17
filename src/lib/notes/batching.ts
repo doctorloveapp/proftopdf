@@ -31,6 +31,7 @@ export async function groupTextSources(
   mode: "notes" | "outline",
   signal?: AbortSignal,
   startIndex = 0,
+  profile: "groq" | "large" = "groq",
 ): Promise<TextUnit[]> {
   const units: TextUnit[] = [];
   let pending: SourceItem[] = [];
@@ -44,8 +45,11 @@ export async function groupTextSources(
   });
   const fits = (items: SourceItem[]) =>
     items.length <= 30 &&
-    utf8Bytes(JSON.stringify(input(items))) <= 14_000 &&
-    buildNotesRequest(input(items)).tokenUpperBound <= NOTES_BATCH_RESERVATION;
+    utf8Bytes(JSON.stringify(input(items))) <=
+      (profile === "large" ? 60_000 : 14_000) &&
+    (profile === "large" ||
+      buildNotesRequest(input(items)).tokenUpperBound <=
+        NOTES_BATCH_RESERVATION);
   const flush = () => {
     if (pending.length)
       units.push({
@@ -81,12 +85,15 @@ export async function planNotes(
   const legacy = buildTextUnits(segments),
     sources = legacy.flatMap((unit) => unit.sources),
     sourceDigest = digest(sources);
+  const profile = data.notesBudgetProfile ?? "groq";
+  const budgetRevision =
+    profile === "large" ? "cascade-large-v1" : NOTES_BUDGET_REVISION;
   if (
     data.notesPlan?.version === "bpe-v1" &&
     data.notesPlan.sourceDigest === sourceDigest
   ) {
     const plan = data.notesPlan;
-    if (plan.budgetRevision === NOTES_BUDGET_REVISION) return plan;
+    if (plan.budgetRevision === budgetRevision) return plan;
     const units: TextUnit[] = [],
       splitDepths = { ...plan.splitDepths };
     let untouched: SourceItem[] = [];
@@ -99,6 +106,7 @@ export async function planNotes(
           "notes",
           signal,
           units.length,
+          profile,
         )),
       );
       untouched = [];
@@ -124,6 +132,7 @@ export async function planNotes(
           "notes",
           signal,
           units.length,
+          profile,
         );
         if (plan.splitDepths?.[unit.id] !== undefined)
           for (const child of resized)
@@ -136,14 +145,18 @@ export async function planNotes(
       ...plan,
       units,
       ...(Object.keys(splitDepths).length ? { splitDepths } : {}),
-      budgetRevision: NOTES_BUDGET_REVISION,
+      budgetRevision,
     };
   }
   // A deployment must not throw away confirmed old units or rename the failed
   // operation being repaired. Preserve that prefix, pack only untouched text.
   let preserved = 0;
   for (const [index, unit] of legacy.entries())
-    if (data.notes[unit.id] || data.failedUnitId === `notes-${unit.id}`)
+    if (
+      data.notes[unit.id] ||
+      (data.failedUnitId === `notes-${unit.id}` &&
+        data.failedUnitId !== data.quotaBlockedUnitId)
+    )
       preserved = index + 1;
   const prefix = legacy.slice(0, preserved);
   const remaining = legacy.slice(preserved).flatMap((unit) => unit.sources);
@@ -153,10 +166,11 @@ export async function planNotes(
     "notes",
     signal,
     preserved,
+    profile,
   );
   return {
     version: "bpe-v1",
-    budgetRevision: NOTES_BUDGET_REVISION,
+    budgetRevision,
     sourceDigest,
     units: [...prefix, ...packed],
   };

@@ -60,13 +60,15 @@ export async function performOperation<T>(
     const failure = await dependencies.providerError(error);
     if (dependencies.notesReservation !== undefined) {
       const actual =
-        error instanceof RouteError ? error.confirmedUsage : undefined;
+        failure.confirmedUsage ??
+        (error instanceof RouteError ? error.confirmedUsage : undefined);
       failure.diagnostics = {
         stage: "provider",
         issueCount: 0,
         issues: [],
         ...failure.diagnostics,
         usage: {
+          ...failure.diagnostics?.usage,
           reservedTokens: dependencies.notesReservation,
           confirmedTokens:
             Number.isSafeInteger(actual) &&
@@ -91,12 +93,11 @@ export async function performOperation<T>(
       .catch(() => false);
     // A definitive invalid response may include verified provider usage. Charge
     // that usage, not the entire reservation. Missing/ambiguous usage stays held.
-    if (
-      error instanceof RouteError &&
-      Number.isSafeInteger(error.confirmedUsage) &&
-      error.confirmedUsage! >= 0
-    )
-      await dependencies.settle(error.confirmedUsage!).catch(() => {});
+    const confirmed =
+      failure.confirmedUsage ??
+      (error instanceof RouteError ? error.confirmedUsage : undefined);
+    if (Number.isSafeInteger(confirmed) && confirmed! >= 0)
+      await dependencies.settle(confirmed!).catch(() => {});
     throw failure;
   }
   // Cache before reconciliation: if Redis fails here, preserve the reservation.

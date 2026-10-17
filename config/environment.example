@@ -1,6 +1,15 @@
 # Safe, tracked template. Copy to .env only when setting up a new environment.
 # Never overwrite the existing .env or put real values in this file.
 GROQ_API_KEY=
+OPENAI_API_KEY=
+OPENROUTER_API_KEY=
+# OpenAI native primary: gpt-6-luna, reasoning standard/medium.
+# 1,000,000 micro USD = $1. These are app spending guards, not account credit.
+OPENAI_TOKENS_PER_MINUTE=1000000
+OPENAI_BUDGET_MICRO_USD_PER_24H=1000000
+OPENAI_BUDGET_MICRO_USD_PER_JOB=250000
+OPENROUTER_REQUESTS_PER_MINUTE=15
+OPENROUTER_REQUESTS_PER_24H=45
 GROQ_STT_MODEL=whisper-large-v3-turbo
 GROQ_NOTES_MODEL=openai/gpt-oss-120b
 UPSTASH_REDIS_REST_URL=

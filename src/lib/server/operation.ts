@@ -26,6 +26,14 @@ return #keys`,
     ],
     [],
   );
+  const cascadeIndex = `proftopdf:v2:llm-job:${owner}:${jobId}`;
+  await getRedis().eval(
+    `
+local keys=redis.call('SMEMBERS',KEYS[1]); for _,key in ipairs(keys) do redis.call('DEL',key) end
+redis.call('DEL',KEYS[1]); redis.call('SET',KEYS[2],'1','EX',90000); return #keys`,
+    [cascadeIndex, `${jobIndex(owner, jobId)}:deleted`],
+    [],
+  );
 }
 function retryTime(error: unknown) {
   const headers = (error as { headers?: Headers })?.headers;

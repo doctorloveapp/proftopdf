@@ -13,10 +13,12 @@ import { ownerKey, runAiOperation } from "@/lib/server/operation";
 import {
   notesRequestSchema,
   PROCESSING_REVISION,
+  LLM_ROUTING_REVISION,
 } from "@/lib/shared/processing";
 import { buildNotesRequest } from "@/lib/notes/request";
 import { acceptNotesCompletion } from "@/lib/notes/completion";
 import { LANGUAGE_POLICY_REVISION } from "@/lib/shared/lecture";
+import { routeNotes } from "@/lib/server/llm/router";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -29,8 +31,10 @@ export async function POST(request: NextRequest) {
       [`inference:${session.id}`],
       [{ limit: 90, windowMs: 60_000 }],
     );
+    const cascade =
+      request.headers.get("x-notes-routing-version") === LLM_ROUTING_REVISION;
     const parsed = notesRequestSchema.safeParse(
-      await readSmallJson(request, 16000),
+      await readSmallJson(request, cascade ? 64000 : 16000),
     );
     if (!parsed.success)
       throw new RouteError(
@@ -38,6 +42,10 @@ export async function POST(request: NextRequest) {
         "INVALID_NOTES_REQUEST",
         "Unità di testo non valida.",
       );
+    if (cascade) {
+      const data = await routeNotes(parsed.data, ownerKey(session));
+      return privateJson({ ok: true, data }, "state" in data ? 202 : 200);
+    }
     const input = parsed.data,
       payload = buildNotesRequest(input);
     const revision =

@@ -13,6 +13,26 @@ const valid = {
   APP_ACCESS_PASSWORD: "synthetic-password",
 };
 
+test("Native OpenAI budgets are independent; free fallback request limits cannot exceed the free plan", () => {
+  const c = parseServerConfig({
+    ...valid,
+    OPENAI_API_KEY: "synthetic-native",
+    OPENROUTER_API_KEY: "synthetic-router",
+  });
+  assert.equal(c.OPENAI_TOKENS_PER_MINUTE, 1_000_000);
+  assert.equal(c.OPENAI_BUDGET_MICRO_USD_PER_24H, 1_000_000);
+  assert.equal(c.OPENAI_BUDGET_MICRO_USD_PER_JOB, 250_000);
+  assert.equal(c.OPENROUTER_REQUESTS_PER_24H, 45);
+  assert.equal(c.LLM_TOKENS_PER_MINUTE, 6000);
+  for (const overrides of [
+    { OPENROUTER_REQUESTS_PER_24H: "51" },
+    { OPENROUTER_REQUESTS_PER_MINUTE: "21" },
+    { OPENAI_BUDGET_MICRO_USD_PER_JOB: "0" },
+    { OPENAI_TOKENS_PER_MINUTE: "2000001" },
+  ])
+    assert.throws(() => parseServerConfig({ ...valid, ...overrides }));
+});
+
 test("Production origin and confirmed model defaults are accepted", () => {
   const config = parseServerConfig(valid);
   assert.equal(config.AI_ENABLED, true);

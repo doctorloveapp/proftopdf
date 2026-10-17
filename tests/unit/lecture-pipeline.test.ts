@@ -16,6 +16,7 @@ import {
 import { wavHeader } from "../../src/lib/audio/wav";
 import {
   emptyProcessing,
+  LLM_ROUTING_REVISION,
   type NotesOutput,
 } from "../../src/lib/shared/processing";
 import { buildTextUnits } from "../../src/lib/notes/assemble";
@@ -106,6 +107,122 @@ const syntheticNotes = (ids: string[]): NotesOutput => ({
   glossary: [],
   uncertainties: [],
   coveredSourceIds: ids,
+});
+
+test("A legacy 12-hour notes pause is reassessed once with the new primary, retaining all confirmed transcripts", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture(),
+    data = local.processing!;
+  data.notesPlan = await planNotes(
+    mergeTranscripts(local.manifest, data.transcripts),
+    data,
+    { jobId: local.job.id, title: local.title, subject: local.subject },
+  );
+  data.failedUnitId = `notes-${data.notesPlan.units[0].id}`;
+  local.job.stage = "paused";
+  local.job.retryAt = new Date(Date.now() + 12 * 3600_000).toISOString();
+  await saveJob(local);
+  let noteCalls = 0;
+  try {
+    const result = await processLecture(
+      local,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      {
+        transcribe: async () => {
+          throw new Error("Do not resend confirmed audio");
+        },
+        wait: async () => {
+          throw new Error("Do not retain the old Groq-only wait");
+        },
+        notes: async (input) => {
+          noteCalls++;
+          return input.mode === "outline"
+            ? {
+                chapters: [
+                  {
+                    title: "Fisica",
+                    sectionIds: input.sources.map((s) => s.id),
+                  },
+                ],
+              }
+            : syntheticNotes(input.sources.map((s) => s.id));
+        },
+      },
+    );
+    assert.equal(result.job.stage, "completed");
+    assert.equal(result.processing!.routingRevision, LLM_ROUTING_REVISION);
+    assert.equal(Object.keys(result.processing!.transcripts).length, 33);
+    assert(noteCalls > 0);
+    assert.equal(result.job.retryAt, null);
+  } finally {
+    await removeJob(local.job.id);
+  }
+});
+
+test("Reaching Groq repacks untouched large units, persists the smaller plan before calls and preserves source order", async (t) => {
+  t.mock.method(console, "info", () => {});
+  t.mock.method(console, "error", () => {});
+  const local = alreadyTranscribedLongLecture();
+  await saveJob(local);
+  let rebatch = false;
+  const sources: string[] = [];
+  try {
+    const result = await processLecture(
+      local,
+      "synthetic",
+      new AbortController().signal,
+      () => {},
+      {},
+      {
+        transcribe: async () => {
+          throw new Error("Unexpected audio");
+        },
+        wait: async () => {},
+        notes: async (input) => {
+          if (input.mode === "outline")
+            return {
+              chapters: [
+                { title: "Fisica", sectionIds: input.sources.map((s) => s.id) },
+              ],
+            };
+          if (!rebatch) {
+            rebatch = true;
+            throw new ClientApiError("Repack", 413, null, "NOTES_REBATCH");
+          }
+          const stored = (await listJobs()).find(
+            (j) => j.job.id === local.job.id,
+          )!;
+          assert.equal(stored.processing!.notesBudgetProfile, "groq");
+          assert(
+            stored.processing!.notesPlan!.units.some(
+              (u) => u.id === input.unitId,
+            ),
+          );
+          const { buildNotesRequest } =
+            await import("../../src/lib/notes/prompt");
+          assert(
+            buildNotesRequest({ ...input, attempt: 2 }).tokenUpperBound <= 5500,
+          );
+          sources.push(...input.sources.map((s) => s.id));
+          return syntheticNotes(input.sources.map((s) => s.id));
+        },
+      },
+    );
+    assert.equal(result.job.stage, "completed");
+    assert.deepEqual(
+      sources,
+      result.processing!.notesPlan!.units.flatMap((u) =>
+        u.sources.map((s) => s.id),
+      ),
+    );
+    assert.equal(new Set(sources).size, sources.length);
+  } finally {
+    await removeJob(local.job.id);
+  }
 });
 
 test("A 12-hour quota denial checkpoints and pauses without holding a timer; saved long waits make no upstream request", async (t) => {

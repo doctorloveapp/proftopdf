@@ -261,11 +261,11 @@ export default function ProcessingPanel({
             {data ? "Riprendi la tua dispensa" : "Dall’audio agli appunti"}
           </h3>
           <p className="local-note">
-            I segmenti verranno inviati a Groq tramite ProfToPdf. La
-            trascrizione sarà poi elaborata per creare gli appunti. Il testo
-            resta in questo browser e in una cache server privata per massimo 15
-            minuti. Le quote gratuite possono richiedere attese: tieni la pagina
-            aperta oppure riprendi più tardi.
+            L’audio viene trascritto da Groq. OpenAI crea gli appunti; in caso
+            di indisponibilità subentrano OpenRouter gratuito e poi Groq. Il
+            testo resta in questo browser e in una cache server privata per
+            massimo 15 minuti. Le quote gratuite possono richiedere attese:
+            tieni la pagina aperta oppure riprendi più tardi.
           </p>
           <button
             className="button full-width"

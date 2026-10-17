@@ -75,7 +75,8 @@ export interface LectureDocument {
 }
 
 export interface QuotaWindow {
-  resource: "audio-seconds" | "tokens" | "requests" | "redis-commands";
+  resource:
+    "audio-seconds" | "tokens" | "requests" | "redis-commands" | "micro-usd";
   windowSeconds: number;
   limit: number;
   used: number;
@@ -87,7 +88,7 @@ export interface QuotaWindow {
 export interface QuotaState {
   checkedAt: string;
   available: boolean;
-  provider: "groq" | "upstash";
+  provider: "groq" | "upstash" | "openai" | "openrouter";
   model: string | null;
   windows: QuotaWindow[];
   reason: "available" | "quota-exhausted" | "unavailable" | "disabled";
@@ -131,7 +132,13 @@ export interface AppError {
 export interface NotesUsage {
   reservedTokens: number;
   confirmedTokens: number | null;
+  provider?: LlmProvider;
+  model?: string;
+  leg?: number;
+  costMicroUsd?: number | null;
+  legs?: Omit<NotesUsage, "legs">[];
 }
+export type LlmProvider = "openai" | "openrouter" | "groq";
 export interface ErrorDiagnostics {
   stage:
     | "structure"

@@ -1,4 +1,5 @@
 import { api, ClientApiError } from "@/lib/client/api";
+import { requestNotes } from "@/lib/client/notes";
 import { fingerprint, abortIfNeeded } from "@/lib/audio/fingerprint";
 import { createAudioLog } from "@/lib/audio/diagnostics";
 import {
@@ -12,6 +13,7 @@ import {
 import {
   emptyProcessing,
   MAX_ATTEMPTS,
+  LLM_ROUTING_REVISION,
   REPAIRABLE_NOTES_CODES,
   type ChunkTranscript,
   type NotesRequest,
@@ -91,16 +93,7 @@ export function browserAdapter(csrfToken: string): ProcessingAdapter {
           "x-language-mode": local.manifest.language === "auto" ? "auto" : "it",
         },
       }),
-    notes: (input, signal) =>
-      api("/api/notes", {
-        method: "POST",
-        signal,
-        body: JSON.stringify(input),
-        headers: {
-          "Content-Type": "application/json",
-          "x-csrf-token": csrfToken,
-        },
-      }),
+    notes: (input, signal) => requestNotes(input, csrfToken, signal),
     wait: waitUntil,
   };
 }
@@ -129,6 +122,17 @@ export async function processLecture(
     (data.attempts[data.failedUnitId] ?? 0) === 0
   )
     data.quotaBlockedUnitId ??= data.failedUnitId;
+  if (data.routingRevision !== LLM_ROUTING_REVISION) {
+    // Reassess a saved notes wait against the newly available primary. STT
+    // waits retain their original scope; no quota counters are reset.
+    if (
+      current.job.retryAt &&
+      /^(notes|outline)-/.test(data.failedUnitId ?? "")
+    )
+      current.job.retryAt = null;
+    data.routingRevision = LLM_ROUTING_REVISION;
+    data.notesBudgetProfile = "large";
+  }
   const aborter = new AbortController(),
     combined = aborter.signal;
   const relay = () => aborter.abort(signal.reason);
@@ -195,6 +199,11 @@ export async function processLecture(
       attempt,
       reservedTokens: usage.reservedTokens,
       confirmedTokens: usage.confirmedTokens ?? -1,
+      providers:
+        usage.legs?.map((leg) => leg.provider).join(",") ??
+        usage.provider ??
+        "legacy-groq",
+      costMicroUsd: usage.costMicroUsd ?? -1,
     });
     await save();
   }
@@ -242,9 +251,12 @@ export async function processLecture(
         if (known?.status === 429 && known.retryAt) {
           if (known.code === "PROVIDER_RATE_LIMIT") increment(key);
           else if (
-            ["QUOTA_EXHAUSTED", "RATE_LIMIT", "PROVIDER_COOLDOWN"].includes(
-              known.code,
-            )
+            [
+              "QUOTA_EXHAUSTED",
+              "RATE_LIMIT",
+              "PROVIDER_COOLDOWN",
+              "LLM_QUOTA",
+            ].includes(known.code)
           )
             data.quotaBlockedUnitId = key;
           await waitForQuota(known.retryAt, key);
@@ -255,7 +267,7 @@ export async function processLecture(
         if (
           stage === "generating-notes" &&
           key.startsWith("notes-") &&
-          known?.code === "NOTES_TRUNCATED"
+          ["NOTES_TRUNCATED", "NOTES_SIZE"].includes(known?.code ?? "")
         )
           throw error;
         if (
@@ -398,7 +410,7 @@ export async function processLecture(
       });
     }
     const segments = mergeTranscripts(current.manifest, data.transcripts);
-    message = "Organizzazione del testo entro il budget gratuito";
+    message = "Organizzazione del testo per la creazione degli appunti";
     await save("generating-notes");
     const { planNotes, groupTextSources, splitFailedNotesUnit } =
       await import("@/lib/notes/batching");
@@ -425,7 +437,7 @@ export async function processLecture(
     async function splitFailed(key: string, code: string) {
       if (
         !key.startsWith("notes-") ||
-        (code !== "NOTES_TRUNCATED" &&
+        (!["NOTES_TRUNCATED", "NOTES_SIZE"].includes(code) &&
           (!["NOTES_COVERAGE", "NOTES_JSON"].includes(code) ||
             (data.attempts[key] ?? 0) < MAX_ATTEMPTS - 1))
       )
@@ -520,6 +532,23 @@ export async function processLecture(
       try {
         await generate(units[index], "notes", index, units.length);
       } catch (error) {
+        if (
+          error instanceof ClientApiError &&
+          error.code === "NOTES_REBATCH" &&
+          data.notesBudgetProfile !== "groq"
+        ) {
+          data.notesBudgetProfile = "groq";
+          data.quotaBlockedUnitId = data.failedUnitId;
+          const resized = await planNotes(segments, data, context, combined);
+          units.splice(0, units.length, ...resized.units);
+          data.notesPlan = { ...resized, units };
+          delete data.failedUnitId;
+          delete data.quotaBlockedUnitId;
+          log("notes.rebatch", { profile: "groq", units: units.length });
+          await save("generating-notes");
+          index = -1;
+          continue;
+        }
         if (
           error instanceof ClientApiError &&
           (await splitFailed(`notes-${units[index].id}`, error.code))

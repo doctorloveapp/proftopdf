@@ -8,6 +8,13 @@ const boundedInteger = (maximum: number, fallback = maximum) =>
 export const serverConfigSchema = z
   .object({
     GROQ_API_KEY: optionalSecret,
+    OPENAI_API_KEY: optionalSecret,
+    OPENROUTER_API_KEY: optionalSecret,
+    OPENAI_TOKENS_PER_MINUTE: boundedInteger(2_000_000, 1_000_000),
+    OPENAI_BUDGET_MICRO_USD_PER_24H: boundedInteger(5_000_000, 1_000_000),
+    OPENAI_BUDGET_MICRO_USD_PER_JOB: boundedInteger(1_000_000, 250_000),
+    OPENROUTER_REQUESTS_PER_MINUTE: boundedInteger(20, 15),
+    OPENROUTER_REQUESTS_PER_24H: boundedInteger(50, 45),
     GROQ_STT_MODEL: z
       .enum(GROQ_MODELS.transcription)
       .default("whisper-large-v3-turbo"),

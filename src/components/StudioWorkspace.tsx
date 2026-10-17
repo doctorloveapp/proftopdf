@@ -46,6 +46,7 @@ export default function StudioWorkspace({
   const [quotas, setQuotas] = useState<{
     transcription: QuotaState;
     notes: QuotaState;
+    notesProviders?: QuotaState[];
   } | null>(null);
   const [quotaError, setQuotaError] = useState(""),
     [notice, setNotice] = useState("");
@@ -243,9 +244,6 @@ export default function StudioWorkspace({
     (window) =>
       window.resource === "audio-seconds" && window.windowSeconds === 3_600,
   );
-  const tokenQuota = quotas?.notes.windows.find(
-    (window) => window.resource === "tokens" && window.windowSeconds === 86_400,
-  );
   const selectedEnd =
     selected?.manifest.chunks
       .filter((chunk) => selected.preparedChunkIds.includes(chunk.id))
@@ -375,19 +373,42 @@ export default function StudioWorkspace({
                 label="Audio utilizzato nelle ultime 24 ore"
               />
             </div>
-            <div>
-              <span>Appunti nelle ultime 24 ore</span>
-              <strong>
-                {tokenQuota
-                  ? `${Math.floor(tokenQuota.remaining / 1000)} mila token`
-                  : "—"}
-              </strong>
-              <p>Il consumo dipende dalla lunghezza del testo.</p>
-              <QuotaMeter
-                window={tokenQuota}
-                label="Token utilizzati nelle ultime 24 ore"
-              />
-            </div>
+            {(quotas?.notesProviders ?? (quotas ? [quotas.notes] : [])).map(
+              (provider) => {
+                const daily = provider.windows.find(
+                  (window) => window.windowSeconds === 86400,
+                );
+                const label =
+                  provider.provider === "openai"
+                    ? "OpenAI · motore principale"
+                    : provider.provider === "openrouter"
+                      ? "OpenRouter · prima riserva gratuita"
+                      : "Groq · seconda riserva gratuita";
+                return (
+                  <div key={provider.provider}>
+                    <span>{label}</span>
+                    <strong>
+                      {daily
+                        ? daily.resource === "micro-usd"
+                          ? `$${(daily.remaining / 1e6).toFixed(2)}`
+                          : daily.resource === "requests"
+                            ? `${daily.remaining} richieste`
+                            : `${Math.floor(daily.remaining / 1000)} mila token`
+                        : "—"}
+                    </strong>
+                    <p>
+                      {provider.provider === "openai"
+                        ? "Budget applicativo residuo nelle 24 ore; non è il saldo del conto OpenAI."
+                        : "Capacità condivisa nelle ultime 24 ore."}
+                    </p>
+                    <QuotaMeter
+                      window={daily}
+                      label={`${label}: capacità utilizzata`}
+                    />
+                  </div>
+                );
+              },
+            )}
           </div>
           {quotaError && (
             <p role="alert" className="quota-error">

@@ -9,7 +9,7 @@ import {
   type TimingSummary,
 } from "./timing";
 
-export const AUDIO_REVISION = "notes-sources-wake-2026-10-17-v6";
+export const AUDIO_REVISION = "llm-cascade-2026-10-17-v7";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;
@@ -145,9 +145,12 @@ export function summarizeNotesUsage(
   ledger: Record<string, import("@/lib/shared/types").NotesUsage> = {},
   historyComplete = false,
 ) {
-  const values = Object.values(ledger);
+  const values = Object.values(ledger).flatMap((value) =>
+    value.legs?.length ? value.legs : [value],
+  );
+  const tagged = values.filter((value) => value.provider);
   return {
-    trackedOperations: values.length,
+    trackedOperations: Object.keys(ledger).length,
     historyComplete,
     confirmedTokens: values.reduce(
       (sum, value) => sum + (value.confirmedTokens ?? 0),
@@ -158,6 +161,32 @@ export function summarizeNotesUsage(
         sum + (value.confirmedTokens === null ? value.reservedTokens : 0),
       0,
     ),
+    ...(tagged.length
+      ? {
+          confirmedCostUsd:
+            tagged.reduce((sum, value) => sum + (value.costMicroUsd ?? 0), 0) /
+            1e6,
+          costHistoryComplete:
+            historyComplete &&
+            tagged.every(
+              (value) =>
+                value.costMicroUsd !== null && value.costMicroUsd !== undefined,
+            ),
+          providers: ["openai", "openrouter", "groq"].map((provider) => ({
+            provider,
+            operations: tagged.filter((value) => value.provider === provider)
+              .length,
+            confirmedTokens: tagged
+              .filter((value) => value.provider === provider)
+              .reduce((sum, value) => sum + (value.confirmedTokens ?? 0), 0),
+            costUsd:
+              tagged
+                .filter((value) => value.provider === provider)
+                .reduce((sum, value) => sum + (value.costMicroUsd ?? 0), 0) /
+              1e6,
+          })),
+        }
+      : {}),
   };
 }
 export function exportAudioLog(

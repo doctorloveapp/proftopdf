@@ -84,6 +84,8 @@ try {
 }
 const secretNames = [
   "GROQ_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
   "UPSTASH_REDIS_REST_TOKEN",
   "SESSION_SECRET",
   "APP_ACCESS_PASSWORD",
