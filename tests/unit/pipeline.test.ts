@@ -404,6 +404,8 @@ test("Requested PCM re-preparation cannot erase saved processing data when the o
     true,
   );
   assert.equal(normalized.job.stage, "ready");
-  assert.equal(normalized.processing, undefined);
+  assert.equal(normalized.processing?.markdownDraft, undefined);
+  assert.deepEqual(normalized.processing?.transcripts, {});
+  assert.equal(normalized.manifest.chunks[0].generation, 1);
   await removeJob(local.job.id);
 });

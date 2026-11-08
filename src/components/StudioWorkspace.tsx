@@ -11,6 +11,7 @@ import type { AudioDetails } from "@/lib/audio/errors";
 import { removeJob, saveJob, type LocalJob } from "@/lib/storage/jobs";
 import { importCheckpoint, exportCheckpoint } from "@/lib/storage/checkpoint";
 import { exportAudioLog, removeAudioLog } from "@/lib/audio/diagnostics";
+import { audioRepairFrom } from "@/lib/audio/recovery";
 import type { QuotaState, ProcessingStage } from "@/lib/shared/types";
 import QuotaMeter from "./QuotaMeter";
 import ProcessingPanel from "./ProcessingPanel";
@@ -232,6 +233,7 @@ export default function StudioWorkspace({
               selected.job.id,
               selected.processing?.notesUsage,
               selected.processing?.usageHistoryComplete,
+              selected,
             ),
           ],
           {
@@ -273,8 +275,10 @@ export default function StudioWorkspace({
       ? selectedEnd / selected.manifest.source.durationSeconds
       : 0);
   const LibraryHeading = editorOpen ? "h2" : "h1";
+  const needsAudioRepair = selected && audioRepairFrom(selected) !== undefined;
   const showAudioPicker =
     !selected ||
+    (!state.busy && needsAudioRepair) ||
     (selected.job.stage !== "ready" && !selected.processing && !state.busy) ||
     (!state.busy &&
       /^(LOCAL_AUDIO_MISSING|AUDIO_|MP3_)/.test(
@@ -496,6 +500,15 @@ export default function StudioWorkspace({
               )}
             {showAudioPicker && (
               <>
+                {needsAudioRepair && (
+                  <p className="local-note" role="status">
+                    Riseleziona gli originali nello stesso ordine per riparare
+                    la parte audio non valida. Le trascrizioni valide precedenti
+                    sono conservate. Non serve creare una nuova lezione. Gli
+                    appunti dipendenti dalla parte ricostruita verranno
+                    rigenerati.
+                  </p>
+                )}
                 <AudioSelection
                   files={files}
                   disabled={state.busy || storageBusy}
@@ -558,11 +571,14 @@ export default function StudioWorkspace({
                     }
                   }}
                 >
-                  {selected?.job.error?.code === "AUDIO_NORMALIZATION_REQUIRED"
-                    ? "Prepara versione WAV compatibile"
-                    : selected
-                      ? "Riprendi la preparazione"
-                      : "Prepara la lezione"}{" "}
+                  {needsAudioRepair
+                    ? "Ripara la preparazione audio"
+                    : selected?.job.error?.code ===
+                        "AUDIO_NORMALIZATION_REQUIRED"
+                      ? "Prepara versione WAV compatibile"
+                      : selected
+                        ? "Riprendi la preparazione"
+                        : "Prepara la lezione"}{" "}
                   <span aria-hidden="true">→</span>
                 </button>
               </>

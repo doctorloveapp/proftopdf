@@ -28,6 +28,7 @@ import { MAX_ATTEMPTS } from "@/lib/shared/processing";
 import { documentFileStem } from "@/lib/pdf/naming";
 import { scrollToControl } from "@/lib/client/scroll";
 import { useScreenWakeLock, wakeLockMessage } from "@/hooks/useScreenWakeLock";
+import { audioRepairFrom } from "@/lib/audio/recovery";
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob),
@@ -97,6 +98,7 @@ export default function ProcessingPanel({
   );
   const transcript = useMemo(() => transcriptText(segments), [segments]);
   const completeAudio =
+    audioRepairFrom(local) === undefined &&
     local.manifest.chunks.length > 0 &&
     local.manifest.chunks.at(-1)!.endSeconds >=
       local.manifest.source.durationSeconds - 0.00001 &&
@@ -269,10 +271,10 @@ export default function ProcessingPanel({
           </h3>
           <p className="local-note">
             L’audio viene trascritto da Groq. OpenAI crea gli appunti; in caso
-            di indisponibilità subentrano OpenRouter gratuito e poi Groq. Il
-            testo resta in questo browser e in una cache server privata per
-            massimo 15 minuti. Le quote gratuite possono richiedere attese:
-            tieni la pagina aperta oppure riprendi più tardi.
+            di indisponibilità subentra Groq gratuito, poi OpenRouter per
+            blocchi prolungati. Il testo resta in questo browser e in una cache
+            server privata per massimo 15 minuti. Le quote gratuite possono
+            richiedere attese: tieni la pagina aperta oppure riprendi più tardi.
           </p>
           <button
             className="button full-width"
@@ -291,7 +293,7 @@ export default function ProcessingPanel({
               chiuderla e premere Riprendi più tardi.
             </p>
           )}
-          {failed && hasFailure && (
+          {failed && hasFailure && audioRepairFrom(local) === undefined && (
             <div className="recovery-actions">
               <p className="local-note">
                 La trascrizione e gli appunti già salvati vengono riutilizzati.
@@ -317,7 +319,7 @@ export default function ProcessingPanel({
                 <>
                   <button
                     className="text-button"
-                    disabled={saving}
+                    disabled={saving || !attemptsRemaining}
                     onClick={() => onProcess({ accurate: true })}
                   >
                     Riprova questo segmento con Whisper V3
@@ -355,6 +357,14 @@ export default function ProcessingPanel({
           {Object.keys(data.notes).length} unità di appunti salvate.
         </p>
       )}
+      {data &&
+        Object.values(data.transcripts).some((result) => result.timing) && (
+          <p className="local-note" role="status">
+            Il servizio ha restituito alcuni riferimenti temporali imprecisi. Il
+            testo è stato conservato e i passaggi interessati sono segnalati
+            come da verificare.
+          </p>
+        )}
       {transcript && (
         <details className="transcript-panel">
           <summary>Trascrizione e riferimenti temporali</summary>
@@ -526,7 +536,13 @@ export default function ProcessingPanel({
                   </p>
                   <button
                     className="text-button"
-                    disabled={busy || pdfBusy || saving}
+                    disabled={
+                      busy ||
+                      pdfBusy ||
+                      saving ||
+                      (data!.attempts[`stt-${chunk.index}`] ?? 0) >=
+                        MAX_ATTEMPTS - 1
+                    }
                     onClick={() =>
                       onProcess({ recoverIndex: chunk.index, accurate: true })
                     }

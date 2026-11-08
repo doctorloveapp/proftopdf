@@ -2,6 +2,7 @@ import { api, ClientApiError } from "@/lib/client/api";
 import { requestNotes } from "@/lib/client/notes";
 import { fingerprint, abortIfNeeded } from "@/lib/audio/fingerprint";
 import { createAudioLog } from "@/lib/audio/diagnostics";
+import { audioRepairFrom } from "@/lib/audio/recovery";
 import {
   acquireStoredJob,
   renewLease,
@@ -85,6 +86,7 @@ export function browserAdapter(csrfToken: string): ProcessingAdapter {
           "x-csrf-token": csrfToken,
           "x-job-id": local.job.id,
           "x-chunk-index": String(chunk.index),
+          "x-chunk-generation": String(chunk.generation ?? 0),
           "x-chunk-start": String(chunk.startSeconds),
           "x-audio-sha256": chunk.sha256,
           "x-source-sha256": local.job.sourceFingerprint,
@@ -307,6 +309,18 @@ export async function processLecture(
     }
   }
   try {
+    log("processing.start", {
+      chunks: current.manifest.chunks.length,
+      resume: Object.keys(data.transcripts).length > 0,
+    });
+    const repairFrom = audioRepairFrom(current);
+    if (repairFrom !== undefined)
+      throw new ClientApiError(
+        "Questa lezione richiede la ricostruzione della parte audio non valida. Riseleziona gli originali nello stesso ordine e premi Ripara la preparazione audio. Le trascrizioni valide precedenti vengono conservate.",
+        422,
+        null,
+        "AUDIO_RESEGMENT_REQUIRED",
+      );
     if (
       !current.manifest.chunks.length ||
       !current.job.sourceFingerprint ||
@@ -316,10 +330,6 @@ export async function processLecture(
       throw new Error("Prepara prima la registrazione.");
     const priorError = current.job.error;
     current.job.error = null;
-    log("processing.start", {
-      chunks: current.manifest.chunks.length,
-      resume: Object.keys(data.transcripts).length > 0,
-    });
     if (
       !options.newAttempt &&
       !options.accurate &&
@@ -340,6 +350,18 @@ export async function processLecture(
     if (options.recoverIndex !== undefined) {
       const chunk = current.manifest.chunks[options.recoverIndex];
       if (!chunk) throw new Error("Segmento da recuperare non valido.");
+      // Check the retry budget BEFORE removing a saved transcript/document.
+      if (
+        (options.newAttempt || options.accurate) &&
+        (data.attempts[`stt-${chunk.index}`] ?? 0) >= MAX_ATTEMPTS - 1
+      )
+        throw new ClientApiError(
+          "Sono già stati usati i tre tentativi per questo segmento. Il lavoro salvato è conservato.",
+          422,
+          null,
+          "ATTEMPTS_EXHAUSTED",
+        );
+      delete data.failedUnitId;
       delete data.transcripts[chunk.id];
       data.failedChunkIndex = chunk.index;
       delete data.document;
@@ -420,7 +442,14 @@ export async function processLecture(
       log("transcription.saved", {
         index: chunk.index,
         segments: response.segments.length,
+        generation: chunk.generation ?? 0,
       });
+      if (response.timing)
+        log("transcription.timing-repaired", {
+          index: chunk.index,
+          ...response.timing,
+          issues: JSON.stringify(response.timing.issues),
+        });
     }
     const segments = mergeTranscripts(current.manifest, data.transcripts);
     message = "Organizzazione del testo per la creazione degli appunti";

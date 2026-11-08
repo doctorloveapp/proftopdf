@@ -18,6 +18,7 @@ const chunkSchema = z
       .max(MAX_AUDIO_PARTS - 1)
       .optional(),
     index: z.number().int().min(0).max(1500),
+    generation: z.number().int().min(0).max(1000).optional(),
     startSeconds: z.number().nonnegative(),
     endSeconds: z.number().positive().max(7200.1),
     overlapSeconds: z.number().nonnegative().max(5),

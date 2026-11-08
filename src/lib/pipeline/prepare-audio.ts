@@ -14,11 +14,13 @@ import {
 } from "@/lib/audio/timeline";
 import { createAudioLog, type AudioLog } from "@/lib/audio/diagnostics";
 import { audioFailure, AudioProcessingError } from "@/lib/audio/errors";
+import { audioRepairFrom, beginAudioRepair } from "@/lib/audio/recovery";
 import {
   acquireStoredJob,
   renewLease,
   releaseLease,
   savePreparedChunk,
+  prunePreparedChunks,
   saveJobWithLease,
   getChunk,
   type LocalJob,
@@ -77,6 +79,13 @@ export async function prepareAudio(
     throw error;
   }
   log("lease.acquired");
+  const repairFrom =
+    audioRepairFrom(current) ??
+    (forcePcm ? (current.processing?.failedChunkIndex ?? 0) : undefined);
+  // Any repair uses bounded PCM, but already verified prefix chunks stay intact.
+  forcePcm ||= repairFrom !== undefined;
+  if (repairFrom !== undefined && !current.audioRepair)
+    current.audioRepairRequestedFrom = repairFrom;
   let phase = "fingerprint",
     activePart = 0;
   const aborter = new AbortController();
@@ -108,6 +117,11 @@ export async function prepareAudio(
   }
   async function open(file: File) {
     abortIfNeeded(combined);
+    // Unaffected earlier recordings must keep the same parser/duration policy.
+    // Switching an earlier MP3 parser during a later-part repair can shift all
+    // subsequent offsets because of codec padding / gapless metadata.
+    const normalizePart =
+      forcePcm && activePart >= (current.audioRepair?.sourcePartIndex ?? 0);
     const wav = await inspectWav(file);
     if (wav) {
       log("format.selected", {
@@ -118,7 +132,7 @@ export async function prepareAudio(
       return { wav, duration: wav.duration, estimatedBytes: file.size };
     }
     if (
-      !forcePcm &&
+      !normalizePart &&
       (/\.mp3$/i.test(file.name) || file.type === "audio/mpeg")
     ) {
       phase = "mp3-scan";
@@ -143,7 +157,7 @@ export async function prepareAudio(
         message: `Caricamento del motore audio · spezzone ${activePart + 1}/${files.length}`,
       });
       const { openAudioWorker } = await import("@/lib/audio/ffmpeg");
-      worker = await openAudioWorker(file, combined, log, forcePcm);
+      worker = await openAudioWorker(file, combined, log, normalizePart);
     }
     return {
       wav: null,
@@ -187,14 +201,16 @@ export async function prepareAudio(
         "fingerprint",
         "La sequenza dei file non corrisponde alla lezione salvata. Seleziona tutti gli originali nello stesso ordine.",
       );
-    if (forcePcm) {
-      current.manifest.chunks = [];
-      current.preparedChunkIds = [];
-      current.job.completedChunkIds = [];
-      current.job.completedNotesUnitIds = [];
-      current.processing = undefined;
-      current.pdfExport = undefined;
-      log("format.normalize-requested", { output: "pcm_s16le" });
+    if (repairFrom !== undefined) {
+      beginAudioRepair(current, repairFrom);
+      await saveJobWithLease(current, token);
+      log("format.normalize-requested", {
+        output: "pcm_s16le",
+        fromIndex: repairFrom,
+        generation: current.audioRepair!.generation,
+        retainedTranscripts: Object.keys(current.processing?.transcripts ?? {})
+          .length,
+      });
     }
     // Preflight one engine at a time. Know total duration/storage before saving
     // chunks: an interrupted first part must never look like a complete lesson.
@@ -270,23 +286,33 @@ export async function prepareAudio(
         const cached = existing
           ? await getChunk(current.job.id, index)
           : undefined;
+        const confirmed =
+          existing &&
+          current.processing?.transcripts[existing.id]?.sha256 ===
+            existing.sha256;
         let metadata: AudioChunk;
         if (
           existing &&
-          cached &&
+          (cached || confirmed) &&
+          existing.startSeconds <= source.startSeconds + start + 0.00001 &&
+          existing.startSeconds >= source.startSeconds + start - 5 &&
+          existing.endSeconds > source.startSeconds + start &&
           (existing.sourcePartIndex ?? 0) === source.index &&
           existing.startSeconds >= source.startSeconds &&
           existing.endSeconds <=
             source.startSeconds + source.durationSeconds + 0.01 &&
-          cached.metadata.sha256 === existing.sha256 &&
-          cached.blob.size === existing.byteLength &&
-          (await fingerprint(cached.blob, combined)) === existing.sha256
+          (confirmed ||
+            (cached &&
+              cached.metadata.sha256 === existing.sha256 &&
+              cached.blob.size === existing.byteLength &&
+              (await fingerprint(cached.blob, combined)) === existing.sha256))
         ) {
           metadata = existing;
-          if (!current.preparedChunkIds.includes(metadata.id))
+          if (cached && !current.preparedChunkIds.includes(metadata.id))
             current.preparedChunkIds.push(metadata.id);
           log("chunk.restored", {
             index,
+            generation: metadata.generation ?? 0,
             part: source.index,
             bytes: metadata.byteLength,
             startSeconds: metadata.startSeconds,
@@ -316,6 +342,11 @@ export async function prepareAudio(
           metadata = {
             id: `${current.job.id}:${index}`,
             index,
+            ...(current.audioRepair
+              ? { generation: current.audioRepair.generation }
+              : existing?.generation !== undefined
+                ? { generation: existing.generation }
+                : {}),
             ...(sources.length > 1 ? { sourcePartIndex: source.index } : {}),
             startSeconds: globalStart,
             endSeconds: source.startSeconds + part.endSeconds,
@@ -338,10 +369,17 @@ export async function prepareAudio(
               existing.startSeconds !== metadata.startSeconds ||
               existing.endSeconds !== metadata.endSeconds) &&
             current.processing
-          )
-            throw new Error(
-              "I confini audio sono cambiati rispetto alla trascrizione salvata. Crea una nuova lezione con questi originali.",
-            );
+          ) {
+            beginAudioRepair(current, index);
+            metadata.generation = current.audioRepair!.generation;
+            log("chunk.rebuilt", {
+              index,
+              generation: metadata.generation,
+              retainedTranscripts: Object.keys(
+                current.processing?.transcripts ?? {},
+              ).length,
+            });
+          }
           const unchanged =
             existing &&
             existing.sha256 === metadata.sha256 &&
@@ -365,6 +403,7 @@ export async function prepareAudio(
             startSeconds: metadata.startSeconds,
             endSeconds: metadata.endSeconds,
             overlapSeconds: metadata.overlapSeconds,
+            generation: metadata.generation ?? 0,
           });
         }
         emit({
@@ -385,6 +424,14 @@ export async function prepareAudio(
       worker = undefined;
       log("timeline.part.complete", { part: source.index, chunks: index });
     }
+    // Remove any obsolete tail from an older segmentation before declaring ready.
+    current.manifest.chunks = current.manifest.chunks.slice(0, index);
+    current.preparedChunkIds = current.preparedChunkIds.filter((id) =>
+      current.manifest.chunks.some((c) => c.id === id),
+    );
+    delete current.audioRepair;
+    delete current.audioRepairRequestedFrom;
+    await prunePreparedChunks(current, token);
     await checkpoint("ready");
     log("preparation.complete", {
       chunks: current.manifest.chunks.length,

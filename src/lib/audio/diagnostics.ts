@@ -9,7 +9,7 @@ import {
   type TimingSummary,
 } from "./timing";
 
-export const AUDIO_REVISION = "audio-picker-m4a-2026-10-17-v11";
+export const AUDIO_REVISION = "audio-aac-recovery-2026-11-08-v12";
 const KEY = "proftopdf:audio-diagnostics:v1";
 const MAX_REPORTS = 5,
   MAX_EVENTS = 200;
@@ -30,6 +30,8 @@ interface DiagnosticReport {
   environment: AudioDetails;
   events: DiagnosticEvent[];
   droppedEvents: number;
+  firstFailure?: DiagnosticEvent;
+  lastFailure?: DiagnosticEvent;
   timingState?: TimingState;
 }
 let memory: DiagnosticReport[] = [];
@@ -127,6 +129,10 @@ export function createAudioLog(
       details: bounded,
     };
     report.updatedAt = entry.at;
+    if (level === "error") {
+      report.firstFailure ??= entry;
+      report.lastFailure = entry;
+    }
     recordTiming(report.timingState, entry);
     report.events.push(entry);
     if (report.events.length > MAX_EVENTS) {
@@ -193,6 +199,7 @@ export function exportAudioLog(
   jobId: string,
   ledger?: Record<string, import("@/lib/shared/types").NotesUsage>,
   historyComplete = false,
+  local?: import("@/lib/storage/jobs").LocalJob,
 ) {
   const report = reports().find((r) => r.jobId === jobId);
   if (!report)
@@ -205,6 +212,44 @@ export function exportAudioLog(
       ...publicReport,
       exportedAt: new Date().toISOString(),
       aiUsageSummary: summarizeNotesUsage(ledger, historyComplete),
+      ...(local
+        ? {
+            audioSummary: {
+              durationSeconds: local.manifest.source.durationSeconds,
+              sourceBytes: local.manifest.source.byteLength,
+              sourceMime: local.manifest.source.mimeType,
+              partCount: local.manifest.sources?.length ?? 1,
+              stage: local.job.stage,
+              repair: local.audioRepair ?? null,
+              repairRequestedFrom: local.audioRepairRequestedFrom ?? null,
+              failedChunkIndex: local.processing?.failedChunkIndex ?? null,
+              lastError: local.job.error
+                ? {
+                    code: local.job.error.code,
+                    retryAt: local.job.error.retryAt,
+                    diagnostics: local.job.error.diagnostics,
+                  }
+                : null,
+              chunks: local.manifest.chunks.map((chunk) => ({
+                index: chunk.index,
+                part: chunk.sourcePartIndex ?? 0,
+                generation: chunk.generation ?? 0,
+                bytes: chunk.byteLength,
+                startSeconds: chunk.startSeconds,
+                endSeconds: chunk.endSeconds,
+                durationSeconds: chunk.endSeconds - chunk.startSeconds,
+                overlapSeconds: chunk.overlapSeconds,
+                codec: chunk.codec,
+                container: chunk.container,
+                prepared: local.preparedChunkIds.includes(chunk.id),
+                status:
+                  local.processing?.transcripts[chunk.id]?.status ?? "pending",
+                attempt: local.processing?.attempts[`stt-${chunk.index}`] ?? 0,
+                timing: local.processing?.transcripts[chunk.id]?.timing,
+              })),
+            },
+          }
+        : {}),
       timingSummary: timingSummary(
         state ?? recoverTiming(report.events, report.droppedEvents),
       ),

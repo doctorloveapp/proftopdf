@@ -15,6 +15,13 @@ export interface PdfExport {
 }
 
 export interface LocalJob {
+  audioRepairRequestedFrom?: number;
+  /** Survives a pause while repairing a legacy audio suffix. */
+  audioRepair?: {
+    fromIndex: number;
+    generation: number;
+    sourcePartIndex?: number;
+  };
   job: ProcessingJob;
   title: string;
   subject: string;
@@ -227,6 +234,29 @@ export async function removeJob(
   for (const key of keys) await transaction.objectStore("chunks").delete(key);
   await transaction.objectStore("jobs").delete(jobId);
   await transaction.objectStore("leases").delete(jobId);
+  await transaction.done;
+}
+/** Discard only blobs no longer referenced by this lesson's current manifest. */
+export async function prunePreparedChunks(local: LocalJob, token: string) {
+  const transaction = (await db()).transaction(
+    ["leases", "chunks"],
+    "readwrite",
+  );
+  const lease = await transaction.objectStore("leases").get(local.job.id);
+  if (!lease || lease.token !== token || lease.expiresAt <= Date.now()) {
+    transaction.abort();
+    await transaction.done.catch(() => {});
+    throw new Error("Preparazione interrotta da un'altra scheda.");
+  }
+  const keep = new Set(
+    local.manifest.chunks.map((c) => chunkKey(local.job.id, c.index)),
+  );
+  const keys = await transaction
+    .objectStore("chunks")
+    .index("by-job")
+    .getAllKeys(local.job.id);
+  for (const key of keys)
+    if (!keep.has(key)) await transaction.objectStore("chunks").delete(key);
   await transaction.done;
 }
 export async function reconcileJob(local: LocalJob): Promise<LocalJob> {

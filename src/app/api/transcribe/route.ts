@@ -15,7 +15,8 @@ import { validateAudioBytes } from "@/lib/server/audio-validation";
 import { enforceRateLimit, operationFingerprint } from "@/lib/server/quota";
 import { ownerKey, runAiOperation } from "@/lib/server/operation";
 import { normalizeTranscription } from "@/lib/transcription/normalize";
-import { PROCESSING_REVISION, MAX_ATTEMPTS } from "@/lib/shared/processing";
+import { MAX_ATTEMPTS } from "@/lib/shared/processing";
+import { transcriptionUnit } from "@/lib/transcription/identity";
 import {
   LANGUAGE_POLICY_REVISION,
   TRANSCRIPTION_PROFILES,
@@ -26,6 +27,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 const headersSchema = z.object({
+  generation: z
+    .string()
+    .regex(/^\d{1,4}$/)
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(1000))
+    .default(0),
   jobId: z.string().uuid(),
   index: z
     .string()
@@ -60,6 +67,7 @@ export async function POST(request: NextRequest) {
       [{ limit: 90, windowMs: 60_000 }],
     );
     const parsed = headersSchema.safeParse({
+      generation: request.headers.get("x-chunk-generation") ?? undefined,
       jobId: request.headers.get("x-job-id"),
       index: request.headers.get("x-chunk-index"),
       start: request.headers.get("x-chunk-start"),
@@ -95,10 +103,7 @@ export async function POST(request: NextRequest) {
     const model = input.accurate ? "whisper-large-v3" : config.GROQ_STT_MODEL;
     // Preserve the old operation identity for paused jobs created before the
     // multilingual policy. A deployment must not repeat an ambiguous inference.
-    const unit =
-      input.languageMode === "it"
-        ? `${PROCESSING_REVISION}:${input.index}:${model}:${input.attempt}`
-        : `${PROCESSING_REVISION}:${LANGUAGE_POLICY_REVISION}:${input.profile}:${input.index}:${model}:${input.attempt}`;
+    const unit = transcriptionUnit({ ...input, model });
     const fingerprint = operationFingerprint([
       unit,
       input.source,

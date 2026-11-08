@@ -1,5 +1,7 @@
 /** All audio timestamps and durations are in seconds; sizes are decimal bytes. */
 export interface AudioChunk {
+  /** Zero/absent preserves legacy STT operation IDs; rebuilt audio gets a new ID. */
+  generation?: number;
   /** Absent in legacy single-audio lessons. Times below are always global. */
   sourcePartIndex?: number;
   id: string;
@@ -174,6 +176,7 @@ export interface ErrorDiagnostics {
     unknownReferenceCount: number;
     emptyReferenceCount: number;
   };
+  transcription?: { measuredSeconds: number; providerSeconds: number };
 }
 
 export type ApiResult<T> =

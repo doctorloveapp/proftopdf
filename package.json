@@ -19,6 +19,7 @@
     "verify:auth": "node --conditions=react-server --import tsx scripts/verify-auth.ts",
     "verify:audio-assets": "node scripts/verify-audio-assets.mjs",
     "verify:audio-core": "node --import tsx scripts/verify-audio-core.mts",
+    "verify:aac-segmentation": "node --import tsx scripts/verify-aac-segmentation.mts",
     "verify:mp3": "node --import tsx scripts/verify-mp3.mts",
     "verify:audio-validation": "node --import tsx scripts/verify-audio-validation.mts",
     "verify:audio-metadata": "node --import tsx scripts/verify-audio-metadata.mts",

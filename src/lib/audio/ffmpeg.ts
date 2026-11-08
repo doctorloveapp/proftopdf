@@ -3,6 +3,7 @@ import { abortIfNeeded } from "./fingerprint";
 import { audioOperation, audioFailure, AudioProcessingError } from "./errors";
 import { parseAudioProbe } from "./probe";
 import type { AudioLog } from "./diagnostics";
+import { segmentArguments, segmentEnd, segmentPlan } from "./segment-policy";
 
 export async function openAudioWorker(
   file: File,
@@ -206,59 +207,35 @@ export async function openAudioWorker(
     return {
       duration: source.duration,
       estimatedBytes:
-        !forcePcm && ["aac", "mp3"].includes(source.codec)
+        !forcePcm && source.codec === "mp3"
           ? Math.ceil(file.size * 1.05)
           : Math.ceil(source.duration * 32_000 * 1.05),
       async chunk(start: number) {
         abortIfNeeded(signal);
-        const copy = !forcePcm && ["aac", "mp3"].includes(source.codec);
+        // AAC packet copy can preserve priming/edit-list timestamps and create
+        // tiny repeated tail chunks. Decode only this bounded chunk to PCM.
+        const copy = !forcePcm && source.codec === "mp3";
         const extension =
           source.codec === "aac"
             ? "m4a"
             : source.codec === "mp3"
               ? "mp3"
               : "flac";
-        let span = copy
-          ? Math.min(
-              180,
-              ((AUDIO_LIMITS.maxChunkBytes - 100_000) * 8) / source.bitrate,
-            )
-          : 90;
-        span = Math.max(1, Math.min(span, source.duration - start));
+        const plan = segmentPlan(start, source.duration, copy, source.bitrate);
+        let span = plan.span;
+        log("worker.segment.plan", {
+          startSeconds: start,
+          spanSeconds: span,
+          sourceSeconds: source.duration,
+          sourceCodec: source.codec,
+          copy,
+          final: plan.final,
+        });
         for (let attempt = 0; attempt < 8; attempt++) {
           abortIfNeeded(signal);
           const path = `/chunk.${copy ? extension : "wav"}`;
           try {
-            const args = [
-              "-hide_banner",
-              "-v",
-              "error",
-              "-ss",
-              String(start),
-              "-i",
-              "/input/source",
-              "-t",
-              String(span),
-              "-map",
-              "0:a:0",
-              "-vn",
-              "-map_metadata",
-              "-1",
-            ];
-            args.push(
-              ...(copy
-                ? [
-                    "-c:a",
-                    "copy",
-                    "-avoid_negative_ts",
-                    "make_zero",
-                    "-fs",
-                    String(AUDIO_LIMITS.maxChunkBytes + 1),
-                  ]
-                : ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]),
-            );
-            if (copy && extension === "m4a")
-              args.push("-movflags", "+faststart");
+            const args = segmentArguments(start, span, copy, extension);
             stderr = [];
             const code = await run("segment", 190_000, () =>
               audio.exec([...args, "-y", path], 180_000),
@@ -283,8 +260,7 @@ export async function openAudioWorker(
               throw new Error("Segmento audio non valido.");
             if (
               raw.byteLength > AUDIO_LIMITS.maxChunkBytes ||
-              details.duration > AUDIO_LIMITS.maxChunkDurationSeconds ||
-              details.duration + 0.25 < span
+              details.duration > AUDIO_LIMITS.maxChunkDurationSeconds
             ) {
               log("worker.segment.retry", {
                 attempt,
@@ -295,8 +271,21 @@ export async function openAudioWorker(
               span *= 0.65;
               continue;
             }
-            if (details.duration <= 0.01)
-              throw new Error("Segmento audio vuoto.");
+            const endSeconds = segmentEnd(
+              start,
+              source.duration,
+              span,
+              details.duration,
+              plan.final && span === plan.span,
+            );
+            log("worker.segment.validated", {
+              startSeconds: start,
+              endSeconds,
+              measuredSeconds: details.duration,
+              bytes: raw.byteLength,
+              eofAdjusted:
+                Math.abs(endSeconds - start - details.duration) > 0.00001,
+            });
             const blob = new Blob([new Uint8Array(raw)], {
               type: copy
                 ? extension === "m4a"
@@ -309,7 +298,7 @@ export async function openAudioWorker(
             return {
               blob,
               startSeconds: start,
-              endSeconds: Math.min(source.duration, start + details.duration),
+              endSeconds,
               codec: copy ? source.codec : "pcm_s16le",
               container: copy ? extension : "wav",
             };

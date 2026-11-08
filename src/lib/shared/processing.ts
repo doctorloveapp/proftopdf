@@ -113,6 +113,13 @@ export interface ChunkTranscript {
   durationSeconds: number;
   status: "transcribed" | "missing";
   segments: { start: number; end: number; text: string; uncertain: boolean }[];
+  timing?: {
+    mode: "clip" | "clamped";
+    measuredSeconds: number;
+    providerSeconds: number;
+    issueCount: number;
+    issues: { index: number; reason: string; start: number; end: number }[];
+  };
 }
 export interface ProcessingData {
   revision: string;
